@@ -7,9 +7,9 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, CheckButton, DropDown, EventControllerKey, HeaderBar, Label, ListView,
-    MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry, SignalListItemFactory,
-    SingleSelection, StringList, Window,
+    Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar, Label,
+    ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
+    SignalListItemFactory, SingleSelection, StringList, Window,
 };
 
 use crate::model::MimeType;
@@ -271,7 +271,13 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     notebook.append_page(&general_page, Some(&Label::new(Some("General"))));
     notebook.append_page(&advanced_root, Some(&Label::new(Some("Advanced"))));
     notebook.set_show_border(false);
-    notebook.set_current_page(Some(1));
+
+    let focus_on_switch = search.clone();
+    notebook.connect_switch_page(move |_, _, page_num| {
+        if page_num == 1 {
+            focus_on_switch.grab_focus();
+        }
+    });
 
     let menu_button = build_menu_button(&filter);
 
@@ -290,24 +296,26 @@ fn build_general_page(store: &ListStore) -> gtk::Box {
     status.set_xalign(0.0);
     status.set_wrap(true);
 
-    let content = Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
+    let grid = Grid::new();
+    grid.set_column_spacing(8);
+    grid.set_row_spacing(6);
+    grid.set_margin_top(12);
+    grid.set_margin_bottom(12);
+    grid.set_margin_start(16);
+    grid.set_margin_end(16);
+
+    let mut row = 0;
     for group in crate::backend::groups() {
         if group.mimes.is_empty() {
             continue;
         }
-        content.append(&group_row(&group, store, &status));
+        attach_group_row(&grid, row, &group, store, &status);
+        row += 1;
     }
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&content)
+        .child(&grid)
         .build();
     scrolled.set_vexpand(true);
 
@@ -317,7 +325,13 @@ fn build_general_page(store: &ListStore) -> gtk::Box {
     page
 }
 
-fn group_row(group: &crate::backend::Group, store: &ListStore, status: &Label) -> gtk::Box {
+fn attach_group_row(
+    grid: &Grid,
+    row: i32,
+    group: &crate::backend::Group,
+    store: &ListStore,
+    status: &Label,
+) {
     let apps = crate::backend::apps_for_group(&group.mimes);
 
     let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
@@ -325,6 +339,7 @@ fn group_row(group: &crate::backend::Group, store: &ListStore, status: &Label) -
     let model = StringList::new(&names);
     let dropdown = DropDown::new(Some(model), None::<&gtk::Expression>);
     dropdown.set_hexpand(true);
+    dropdown.set_valign(Align::Center);
 
     if let Some(default) = gio::AppInfo::default_for_type(&group.mimes[0], false)
         && let Some(index) = apps.iter().position(|app| app.id() == default.id())
@@ -335,8 +350,11 @@ fn group_row(group: &crate::backend::Group, store: &ListStore, status: &Label) -
     let name_label = Label::new(Some(group.name));
     name_label.add_css_class("mimic-description");
     name_label.set_xalign(0.0);
+    name_label.set_valign(Align::Center);
 
     let button = Button::with_label("Set Default");
+    button.set_halign(Align::Start);
+    button.set_valign(Align::Center);
 
     let click_dropdown = dropdown.clone();
     let click_status = status.clone();
@@ -366,16 +384,9 @@ fn group_row(group: &crate::backend::Group, store: &ListStore, status: &Label) -
         }
     });
 
-    let row = Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .margin_top(4)
-        .margin_bottom(4)
-        .build();
-    row.append(&name_label);
-    row.append(&dropdown);
-    row.append(&button);
-    row
+    grid.attach(&name_label, 0, row, 1, 1);
+    grid.attach(&dropdown, 1, row, 1, 1);
+    grid.attach(&button, 2, row, 1, 1);
 }
 
 fn build_menu_button(filter: &MimicFilter) -> MenuButton {
