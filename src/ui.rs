@@ -9,7 +9,7 @@ use gtk::prelude::*;
 use gtk::{
     Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar, Label,
     ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringList, Window,
+    SignalListItemFactory, SingleSelection, StringList,
 };
 
 use crate::model::MimeType;
@@ -144,36 +144,24 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     let selection = SingleSelection::new(Some(filtered));
     selection.set_autoselect(false);
 
+    let status = Label::new(None);
+    status.add_css_class("mimic-error");
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+
+    let setup_status = status.clone();
     let factory = SignalListItemFactory::new();
-    factory.connect_setup(|_, object| {
+    factory.connect_setup(move |_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        setup_row(item);
+        setup_row(item, &setup_status);
     });
     factory.connect_bind(|_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
         bind_row(item);
     });
-    factory.connect_unbind(|_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        let handler = unsafe { item.data::<glib::SignalHandlerId>("default_notify") };
-        let mime_type = item.item().and_downcast::<MimeType>();
-        if let (Some(handler), Some(mime_type)) = (handler, mime_type) {
-            let handler = unsafe { handler.read() };
-            mime_type.disconnect(handler);
-        }
-    });
 
     let list_view = ListView::new(Some(selection.clone()), Some(factory));
     list_view.set_vexpand(true);
-    list_view.set_single_click_activate(true);
-
-    let window_clone = window.clone();
-    list_view.connect_activate(move |_, position| {
-        let mime_type = selection.item(position).and_downcast::<MimeType>();
-        if let Some(mime_type) = mime_type {
-            show_app_chooser(&window_clone, &mime_type);
-        }
-    });
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -263,6 +251,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         .build();
     advanced_root.append(&controls);
     advanced_root.append(&scrolled);
+    advanced_root.append(&status);
     advanced_root.add_controller(keys);
 
     let general_page = build_general_page(&store);
@@ -419,212 +408,79 @@ fn build_menu_button(filter: &MimicFilter) -> MenuButton {
         .build()
 }
 
-fn show_app_chooser(parent_window: &gtk::ApplicationWindow, mime_type: &MimeType) {
-    let apps = crate::backend::apps_for(&mime_type.mime());
-
-    let apps_store = ListStore::new::<gio::AppInfo>();
-    for app in &apps {
-        apps_store.append(app);
+fn apps_for_dropdown(mime: &str) -> Vec<gio::AppInfo> {
+    let mut apps = crate::backend::apps_for(mime);
+    if apps.is_empty()
+        && let Some(default) = gio::AppInfo::default_for_type(mime, false)
+    {
+        apps.push(default);
     }
-
-    let title = Label::new(Some(&format!("Default for {}", mime_type.mime())));
-    title.add_css_class("mimic-description");
-    title.set_xalign(0.0);
-    title.set_wrap(true);
-
-    let status = Label::new(None);
-    status.add_css_class("mimic-error");
-    status.set_xalign(0.0);
-    status.set_wrap(true);
-
-    let apps_selection = SingleSelection::new(Some(apps_store.clone()));
-    apps_selection.set_autoselect(false);
-
-    let factory = SignalListItemFactory::new();
-    factory.connect_setup(|_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        setup_app_row(item);
-    });
-    factory.connect_bind(|_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        bind_app_row(item);
-    });
-
-    let apps_list = ListView::new(Some(apps_selection.clone()), Some(factory));
-    apps_list.set_vexpand(true);
-
-    let scrolled = ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .max_content_height(300)
-        .child(&apps_list)
-        .build();
-
-    let set_button = Button::builder()
-        .label("Set Default")
-        .css_classes(["suggested-action"])
-        .build();
-
-    let content = Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(8)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(16)
-        .margin_end(16)
-        .build();
-    content.append(&title);
-    content.append(&scrolled);
-    content.append(&set_button);
-    content.append(&status);
-
-    let chooser = Window::builder()
-        .title("Choose application")
-        .default_width(450)
-        .default_height(440)
-        .transient_for(parent_window)
-        .modal(true)
-        .child(&content)
-        .build();
-
-    let close_chooser = chooser.clone();
-    let controller = EventControllerKey::new();
-    controller.connect_key_pressed(move |_, keyval, _, _| {
-        if keyval == gtk::gdk::Key::Escape {
-            close_chooser.close();
-            glib::Propagation::Stop
-        } else {
-            glib::Propagation::Proceed
-        }
-    });
-    chooser.add_controller(controller);
-
-    let button_chooser = chooser.clone();
-    let button_mime = mime_type.clone();
-    let button_status = status.clone();
-    let button_selection = apps_selection.clone();
-    let button_store = apps_store.clone();
-    set_button.connect_clicked(move |_| {
-        if let Some(app) = selected_app(&button_selection, &button_store) {
-            apply_default(&button_chooser, &button_mime, &app, &button_status);
-        }
-    });
-
-    let list_chooser = chooser.clone();
-    let list_mime = mime_type.clone();
-    let list_status = status.clone();
-    let list_selection = apps_selection.clone();
-    let list_store = apps_store.clone();
-    apps_list.connect_activate(move |_, _| {
-        if let Some(app) = selected_app(&list_selection, &list_store) {
-            apply_default(&list_chooser, &list_mime, &app, &list_status);
-        }
-    });
-
-    chooser.present();
+    apps
 }
 
-fn selected_app(selection: &SingleSelection, store: &ListStore) -> Option<gio::AppInfo> {
-    let position = selection.selected();
-    if position == u32::MAX {
-        return None;
-    }
-    store.item(position).and_downcast::<gio::AppInfo>()
-}
-
-fn apply_default(
-    chooser: &Window,
-    mime_type: &MimeType,
-    app: &gio::AppInfo,
-    status: &Label,
-) {
-    match crate::backend::set_default(&mime_type.mime(), app) {
-        Ok(()) => {
-            mime_type.set_default_app(Some(app.name()));
-            chooser.close();
-        }
-        Err(error) => status.set_text(&format!("Failed to set default: {error}")),
-    }
-}
-
-fn setup_app_row(item: &gtk::ListItem) {
-    let image = gtk::Image::new();
-    image.set_pixel_size(24);
-
-    let name = Label::new(None);
-    name.set_xalign(0.0);
-    name.set_hexpand(true);
-    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
-    let row = Box::new(gtk::Orientation::Horizontal, 8);
-    row.set_margin_top(4);
-    row.set_margin_bottom(4);
-    row.set_margin_start(6);
-    row.set_margin_end(6);
-    row.append(&image);
-    row.append(&name);
-
-    item.set_child(Some(&row));
-    unsafe {
-        item.set_data("image", image);
-        item.set_data("name", name);
-    }
-}
-
-fn bind_app_row(item: &gtk::ListItem) {
-    let app = item
-        .item()
-        .and_downcast::<gio::AppInfo>()
-        .expect("list item holds an AppInfo");
-
-    let (image, name) = unsafe {
-        (
-            item.data::<gtk::Image>("image").expect("widgets are set up").as_ref(),
-            item.data::<Label>("name").expect("widgets are set up").as_ref(),
-        )
-    };
-
-    name.set_text(&app.name());
-    match app.icon() {
-        Some(icon) => image.set_from_gicon(&icon),
-        None => image.set_icon_name(Some("application-x-executable")),
-    }
-}
-
-fn setup_row(item: &gtk::ListItem) {
+fn setup_row(item: &gtk::ListItem, status: &Label) {
     let description = Label::new(None);
     description.add_css_class("mimic-description");
     description.set_xalign(0.0);
+    description.set_valign(Align::Center);
+    description.set_hexpand(true);
     description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+    let dropdown = DropDown::new(None::<StringList>, None::<&gtk::Expression>);
+    dropdown.set_hexpand(true);
+    dropdown.set_valign(Align::Center);
+    dropdown.set_width_request(220);
+
+    let set_button = Button::with_label("Set Default");
+    set_button.set_valign(Align::Center);
+
+    let first = Box::new(gtk::Orientation::Horizontal, 8);
+    first.append(&description);
+    first.append(&dropdown);
+    first.append(&set_button);
 
     let mime = Label::new(None);
     mime.add_css_class("monospace");
     mime.add_css_class("dim-label");
     mime.set_xalign(0.0);
-    mime.set_hexpand(true);
     mime.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
-    let default = Label::new(None);
-    default.add_css_class("dim-label");
-    default.set_halign(Align::End);
-    default.set_ellipsize(gtk::pango::EllipsizeMode::End);
-
-    let second = Box::new(gtk::Orientation::Horizontal, 12);
-    second.append(&mime);
-    second.append(&default);
 
     let row = Box::new(gtk::Orientation::Vertical, 2);
     row.set_margin_top(4);
     row.set_margin_bottom(4);
     row.set_margin_start(6);
     row.set_margin_end(6);
-    row.append(&description);
-    row.append(&second);
+    row.append(&first);
+    row.append(&mime);
+
+    let click_item = item.clone();
+    let click_dropdown = dropdown.clone();
+    let click_status = status.clone();
+    set_button.connect_clicked(move |_| {
+        let index = click_dropdown.selected();
+        if index == u32::MAX {
+            return;
+        }
+        let Some(mime_type) = click_item.item().and_downcast::<MimeType>() else {
+            return;
+        };
+        let Some(app) = apps_for_dropdown(&mime_type.mime()).get(index as usize).cloned() else {
+            return;
+        };
+        match crate::backend::set_default(&mime_type.mime(), &app) {
+            Ok(()) => {
+                click_status.set_text("");
+                mime_type.set_default_app(Some(app.name()));
+            }
+            Err(error) => click_status.set_text(&format!("Failed to set default: {error}")),
+        }
+    });
 
     item.set_child(Some(&row));
     unsafe {
         item.set_data("description", description);
         item.set_data("mime", mime);
-        item.set_data("default_app", default);
+        item.set_data("dropdown", dropdown);
     }
 }
 
@@ -634,26 +490,28 @@ fn bind_row(item: &gtk::ListItem) {
         .and_downcast::<MimeType>()
         .expect("list item holds a MimeType");
 
-    let (description, mime, default) = unsafe {
+    let (description, mime, dropdown) = unsafe {
         (
             item.data::<Label>("description").expect("widgets are set up").as_ref(),
             item.data::<Label>("mime").expect("widgets are set up").as_ref(),
-            item.data::<Label>("default_app").expect("widgets are set up").as_ref(),
+            item.data::<DropDown>("dropdown").expect("widgets are set up").as_ref(),
         )
     };
 
     description.set_text(&mime_type.description());
     mime.set_text(&mime_type.mime());
-    default.set_text(mime_type.default_app().as_deref().unwrap_or("—"));
 
-    if unsafe { item.data::<glib::SignalHandlerId>("default_notify") }.is_none() {
-        let default_label = default.clone();
-        let handler = mime_type.connect_notify_local(Some("default-app"), move |mime_type, _| {
-            default_label.set_text(mime_type.default_app().as_deref().unwrap_or("—"));
-        });
-        unsafe {
-            item.set_data("default_notify", handler);
-        }
+    let apps = apps_for_dropdown(&mime_type.mime());
+
+    let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
+    let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
+    let model = StringList::new(&names);
+    dropdown.set_model(Some(&model));
+
+    if let Some(default) = gio::AppInfo::default_for_type(&mime_type.mime(), false)
+        && let Some(index) = apps.iter().position(|app| app.id() == default.id())
+    {
+        dropdown.set_selected(index as u32);
     }
 }
 
