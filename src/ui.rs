@@ -1,5 +1,8 @@
 // Сборка интерфейса.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
@@ -185,6 +188,43 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     search.connect_search_changed(move |search| {
         filter_search.set_search(search.text().to_string());
         filter_search.changed(gtk::FilterChange::Different);
+    });
+
+    let search_is_focused = Rc::new(Cell::new(false));
+    let flag_enter = search_is_focused.clone();
+    let focus_tracker = gtk::EventControllerFocus::new();
+    focus_tracker.set_propagation_phase(gtk::PropagationPhase::Capture);
+    focus_tracker.connect_enter(move |_| flag_enter.set(true));
+    let flag_leave = search_is_focused.clone();
+    focus_tracker.connect_leave(move |_| flag_leave.set(false));
+    search.add_controller(focus_tracker);
+
+    let search_for_keys = search.clone();
+    let search_focused = search_is_focused.clone();
+    let keys = EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(move |_, keyval, _, state| {
+        if keyval == gtk::gdk::Key::Escape {
+            search_for_keys.set_text("");
+            return glib::Propagation::Stop;
+        }
+        let modifiers = gtk::gdk::ModifierType::CONTROL_MASK
+            | gtk::gdk::ModifierType::ALT_MASK
+            | gtk::gdk::ModifierType::SUPER_MASK;
+        if !search_focused.get()
+            && !state.intersects(modifiers)
+            && keyval.to_unicode().is_some()
+        {
+            search_for_keys.grab_focus();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(keys);
+
+    let focus_search = search.clone();
+    window.connect_show(move |_| {
+        focus_search.grab_focus();
     });
 
     let filter_category = filter.clone();
