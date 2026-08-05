@@ -2,6 +2,7 @@ use gtk::prelude::*;
 use gtk::{Application, glib};
 
 mod backend;
+mod chooser;
 mod model;
 mod ui;
 

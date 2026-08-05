@@ -332,8 +332,8 @@ fn attach_group_row(
     let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
     let model = StringList::new(&names);
     let dropdown = DropDown::new(Some(model), None::<&gtk::Expression>);
-    dropdown.set_hexpand(true);
     dropdown.set_valign(Align::Center);
+    dropdown.set_width_request(280);
 
     if let Some(default) = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
         && let Some(index) = apps.iter().position(|app| app.id() == default.id())
@@ -344,6 +344,7 @@ fn attach_group_row(
     let name_label = Label::new(Some(group.name));
     name_label.add_css_class("mimic-description");
     name_label.set_xalign(0.0);
+    name_label.set_hexpand(true);
     name_label.set_valign(Align::Center);
 
     let button = Button::with_label("Set Default");
@@ -427,9 +428,8 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
     description.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
     let dropdown = DropDown::new(None::<StringList>, None::<&gtk::Expression>);
-    dropdown.set_hexpand(true);
     dropdown.set_valign(Align::Center);
-    dropdown.set_width_request(220);
+    dropdown.set_width_request(280);
 
     let set_button = Button::with_label("Set Default");
     set_button.set_valign(Align::Center);
