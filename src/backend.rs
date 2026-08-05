@@ -10,7 +10,7 @@ use crate::model::MimeType;
 pub fn load_mime_types() -> Vec<MimeType> {
     let registered: BTreeSet<_> =
         gio::functions::content_types_get_registered().into_iter().collect();
-    registered
+    let mut mime_types: Vec<_> = registered
         .into_iter()
         .map(|mime| {
             let description = gio::functions::content_type_get_description(&mime);
@@ -19,7 +19,14 @@ pub fn load_mime_types() -> Vec<MimeType> {
                 .map(|app| app.name().to_string());
             MimeType::new(&mime, &description, &category, default_app)
         })
-        .collect()
+        .collect();
+    mime_types.sort_by_key(|mime_type| {
+        (
+            mime_type.category().to_string(),
+            mime_type.description().to_lowercase(),
+        )
+    });
+    mime_types
 }
 
 fn category_of(mime: &str) -> String {
