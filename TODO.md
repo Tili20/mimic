@@ -22,10 +22,10 @@
 
 ## UI
 
-- [ ] Главное окно: `ApplicationWindow` + `HeaderBar`
-- [ ] `SearchEntry` — поиск по типу/описанию
-- [ ] `DropDown` — фильтр по категориям
-- [ ] `ListView` + `SignalListItemFactory` — список MIME-типов
+- [x] Главное окно: `ApplicationWindow` + `HeaderBar`
+- [x] `SearchEntry` — поиск по типу/описанию
+- [x] `DropDown` — фильтр по категориям
+- [x] `ListView` + `SignalListItemFactory` — список MIME-типов
 - [ ] Кастомный `gtk::Filter` + `FilterListModel` — фильтрация по тексту и категории
 - [ ] `Popover` — выбор приложения из списка с иконками
 - [ ] Кнопка "Set Default" — установка дефолта и обновление модели

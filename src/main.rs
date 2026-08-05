@@ -1,51 +1,14 @@
 use gtk::prelude::*;
-use gtk::{Application, ApplicationWindow, Button, glib};
+use gtk::{Application, glib};
 
 mod backend;
 mod model;
 mod ui;
 
-const APP_ID: &str = "org.gtk_rs.HelloWorld3";
+const APP_ID: &str = "org.mimic.Mimic";
 
 fn main() -> glib::ExitCode {
-    // Create a new application
     let app = Application::builder().application_id(APP_ID).build();
-
-    // Connect to "activate" signal of `app`
-    app.connect_activate(build_ui);
-
-    // Run the application
+    app.connect_activate(ui::build_ui);
     app.run()
-}
-
-fn build_ui(app: &Application) {
-    let mime_types = backend::load_mime_types();
-    println!("loaded {} mime types", mime_types.len());
-    for mt in mime_types.iter().take(5) {
-        println!("{} | {} | {:?}", mt.mime(), mt.description(), mt.default_app());
-    }
-    // Create a button with label and margins
-    let button = Button::builder()
-        .label("Press me!")
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-
-    // Connect to "clicked" signal of `button`
-    button.connect_clicked(|button| {
-        // Set the label to "Hello World!" after the button has been clicked on
-        button.set_label("Hello World!");
-    });
-
-    // Create a window
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("My GTK App")
-        .child(&button)
-        .build();
-
-    // Present window
-    window.present();
 }
