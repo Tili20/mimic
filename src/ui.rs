@@ -4,8 +4,8 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, DropDown, HeaderBar, Label, ListView, Popover, ScrolledWindow,
-    SearchEntry, SignalListItemFactory, SingleSelection, StringList,
+    Align, Box, Button, DropDown, EventControllerKey, HeaderBar, Label, ListView,
+    ScrolledWindow, SearchEntry, SignalListItemFactory, SingleSelection, StringList, Window,
 };
 
 use crate::model::MimeType;
@@ -149,11 +149,13 @@ fn setup_window(window: &gtk::ApplicationWindow) {
 
     let list_view = ListView::new(Some(selection.clone()), Some(factory));
     list_view.set_vexpand(true);
+    list_view.set_single_click_activate(true);
 
-    list_view.connect_activate(move |list_view, position| {
+    let window_clone = window.clone();
+    list_view.connect_activate(move |_, position| {
         let mime_type = selection.item(position).and_downcast::<MimeType>();
         if let Some(mime_type) = mime_type {
-            show_app_chooser(list_view, &mime_type);
+            show_app_chooser(&window_clone, &mime_type);
         }
     });
 
@@ -218,7 +220,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     window.present();
 }
 
-fn show_app_chooser(list_view: &ListView, mime_type: &MimeType) {
+fn show_app_chooser(parent_window: &gtk::ApplicationWindow, mime_type: &MimeType) {
     let apps = crate::backend::apps_for(&mime_type.mime());
 
     let apps_store = ListStore::new::<gio::AppInfo>();
@@ -266,39 +268,60 @@ fn show_app_chooser(list_view: &ListView, mime_type: &MimeType) {
     let content = Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(8)
-        .width_request(320)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(16)
+        .margin_end(16)
         .build();
     content.append(&title);
     content.append(&scrolled);
     content.append(&set_button);
     content.append(&status);
 
-    let popover = Popover::builder().child(&content).build();
-    popover.set_parent(list_view);
+    let chooser = Window::builder()
+        .title("Choose application")
+        .default_width(450)
+        .default_height(440)
+        .transient_for(parent_window)
+        .modal(true)
+        .child(&content)
+        .build();
 
-    let button_popover = popover.clone();
+    let close_chooser = chooser.clone();
+    let controller = EventControllerKey::new();
+    controller.connect_key_pressed(move |_, keyval, _, _| {
+        if keyval == gtk::gdk::Key::Escape {
+            close_chooser.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    chooser.add_controller(controller);
+
+    let button_chooser = chooser.clone();
     let button_mime = mime_type.clone();
     let button_status = status.clone();
     let button_selection = apps_selection.clone();
     let button_store = apps_store.clone();
     set_button.connect_clicked(move |_| {
         if let Some(app) = selected_app(&button_selection, &button_store) {
-            apply_default(&button_popover, &button_mime, &app, &button_status);
+            apply_default(&button_chooser, &button_mime, &app, &button_status);
         }
     });
 
-    let list_popover = popover.clone();
+    let list_chooser = chooser.clone();
     let list_mime = mime_type.clone();
     let list_status = status.clone();
     let list_selection = apps_selection.clone();
     let list_store = apps_store.clone();
     apps_list.connect_activate(move |_, _| {
         if let Some(app) = selected_app(&list_selection, &list_store) {
-            apply_default(&list_popover, &list_mime, &app, &list_status);
+            apply_default(&list_chooser, &list_mime, &app, &list_status);
         }
     });
 
-    popover.popup();
+    chooser.present();
 }
 
 fn selected_app(selection: &SingleSelection, store: &ListStore) -> Option<gio::AppInfo> {
@@ -310,7 +333,7 @@ fn selected_app(selection: &SingleSelection, store: &ListStore) -> Option<gio::A
 }
 
 fn apply_default(
-    popover: &Popover,
+    chooser: &Window,
     mime_type: &MimeType,
     app: &gio::AppInfo,
     status: &Label,
@@ -318,7 +341,7 @@ fn apply_default(
     match crate::backend::set_default(&mime_type.mime(), app) {
         Ok(()) => {
             mime_type.set_default_app(Some(app.name()));
-            popover.popdown();
+            chooser.close();
         }
         Err(error) => status.set_text(&format!("Failed to set default: {error}")),
     }
