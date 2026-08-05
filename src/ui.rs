@@ -7,8 +7,9 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, DropDown, EventControllerKey, HeaderBar, Label, ListView,
-    ScrolledWindow, SearchEntry, SignalListItemFactory, SingleSelection, StringList, Window,
+    Align, Box, Button, CheckButton, DropDown, EventControllerKey, HeaderBar, Label, ListView,
+    MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry, SignalListItemFactory,
+    SingleSelection, StringList, Window,
 };
 
 use crate::model::MimeType;
@@ -28,6 +29,8 @@ mod imp {
         pub search: RefCell<String>,
         #[property(get, set)]
         pub category: RefCell<String>,
+        #[property(get, set)]
+        pub hide_rare: RefCell<bool>,
     }
 
     #[glib::object_subclass]
@@ -38,6 +41,11 @@ mod imp {
     }
 
     impl ObjectImpl for MimicFilter {
+        fn constructed(&self) {
+            self.parent_constructed();
+            self.hide_rare.replace(true);
+        }
+
         fn properties() -> &'static [glib::ParamSpec] {
             Self::derived_properties()
         }
@@ -61,6 +69,7 @@ mod imp {
                 mime_type,
                 self.search.borrow().as_str(),
                 self.category.borrow().as_str(),
+                *self.hide_rare.borrow(),
             )
         }
     }
@@ -76,8 +85,12 @@ impl MimicFilter {
     }
 }
 
-fn matches(mime_type: &MimeType, search: &str, category: &str) -> bool {
+fn matches(mime_type: &MimeType, search: &str, category: &str, hide_rare: bool) -> bool {
     let search = search.to_lowercase();
+
+    if hide_rare && crate::backend::is_rare(&mime_type.mime()) {
+        return false;
+    }
 
     let category_matches =
         category.is_empty() || category == "All" || mime_type.category() == category;
@@ -126,7 +139,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     }
 
     let filter = MimicFilter::new();
-    let filtered = gtk::FilterListModel::new(Some(store), Some(filter.clone()));
+    let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
 
     let selection = SingleSelection::new(Some(filtered));
     selection.set_autoselect(false);
@@ -220,7 +233,6 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         }
         glib::Propagation::Proceed
     });
-    window.add_controller(keys);
 
     let focus_search = search.clone();
     window.connect_show(move |_| {
@@ -246,18 +258,149 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     controls.append(&search);
     controls.append(&dropdown);
 
-    let root = Box::builder()
+    let advanced_root = Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
-    root.append(&controls);
-    root.append(&scrolled);
+    advanced_root.append(&controls);
+    advanced_root.append(&scrolled);
+    advanced_root.add_controller(keys);
+
+    let general_page = build_general_page(&store);
+
+    let notebook = Notebook::new();
+    notebook.append_page(&general_page, Some(&Label::new(Some("General"))));
+    notebook.append_page(&advanced_root, Some(&Label::new(Some("Advanced"))));
+    notebook.set_show_border(false);
+    notebook.set_current_page(Some(1));
+
+    let menu_button = build_menu_button(&filter);
 
     let header = HeaderBar::new();
     header.set_title_widget(Some(&gtk::Label::new(Some("Mimic"))));
+    header.pack_end(&menu_button);
 
     window.set_titlebar(Some(&header));
-    window.set_child(Some(&root));
+    window.set_child(Some(&notebook));
     window.present();
+}
+
+fn build_general_page(store: &ListStore) -> gtk::Box {
+    let status = Label::new(None);
+    status.add_css_class("mimic-error");
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+
+    let content = Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    for group in crate::backend::groups() {
+        if group.mimes.is_empty() {
+            continue;
+        }
+        content.append(&group_row(&group, store, &status));
+    }
+
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&content)
+        .build();
+    scrolled.set_vexpand(true);
+
+    let page = Box::builder().orientation(gtk::Orientation::Vertical).build();
+    page.append(&scrolled);
+    page.append(&status);
+    page
+}
+
+fn group_row(group: &crate::backend::Group, store: &ListStore, status: &Label) -> gtk::Box {
+    let apps = crate::backend::apps_for_group(&group.mimes);
+
+    let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
+    let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
+    let model = StringList::new(&names);
+    let dropdown = DropDown::new(Some(model), None::<&gtk::Expression>);
+    dropdown.set_hexpand(true);
+
+    if let Some(default) = gio::AppInfo::default_for_type(&group.mimes[0], false)
+        && let Some(index) = apps.iter().position(|app| app.id() == default.id())
+    {
+        dropdown.set_selected(index as u32);
+    }
+
+    let name_label = Label::new(Some(group.name));
+    name_label.add_css_class("mimic-description");
+    name_label.set_xalign(0.0);
+
+    let button = Button::with_label("Set Default");
+
+    let click_dropdown = dropdown.clone();
+    let click_status = status.clone();
+    let click_mimes = group.mimes.clone();
+    let click_apps = apps.clone();
+    let click_store = store.clone();
+    button.connect_clicked(move |_| {
+        let index = click_dropdown.selected();
+        if index == u32::MAX {
+            return;
+        }
+        let Some(app) = click_apps.get(index as usize) else {
+            return;
+        };
+        match crate::backend::set_default_group(&click_mimes, app) {
+            Ok(()) => {
+                click_status.set_text("");
+                for i in 0..click_store.n_items() {
+                    if let Some(mime_type) = click_store.item(i).and_downcast::<MimeType>()
+                        && click_mimes.iter().any(|m| m.as_str() == mime_type.mime().as_str())
+                    {
+                        mime_type.set_default_app(Some(app.name()));
+                    }
+                }
+            }
+            Err(error) => click_status.set_text(&format!("Failed to set default: {error}")),
+        }
+    });
+
+    let row = Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .build();
+    row.append(&name_label);
+    row.append(&dropdown);
+    row.append(&button);
+    row
+}
+
+fn build_menu_button(filter: &MimicFilter) -> MenuButton {
+    let check = CheckButton::builder()
+        .label("Hide rarely used MIME types")
+        .active(true)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+
+    let filter_hide = filter.clone();
+    check.connect_toggled(move |check| {
+        filter_hide.set_hide_rare(check.is_active());
+        filter_hide.changed(gtk::FilterChange::Different);
+    });
+
+    let popover = Popover::new();
+    popover.set_child(Some(&check));
+
+    MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .popover(&popover)
+        .build()
 }
 
 fn show_app_chooser(parent_window: &gtk::ApplicationWindow, mime_type: &MimeType) {
@@ -510,7 +653,19 @@ mod tests {
         search: &str,
     ) -> bool {
         let mime_type = MimeType::new(mime, description, item_category, None);
-        matches(&mime_type, search, filter_category)
+        matches(&mime_type, search, filter_category, false)
+    }
+
+    #[test]
+    fn hide_rare_hides_junk_types() {
+        let rare = MimeType::new(
+            "x-scheme-handler/http",
+            "URL handler for http",
+            "x-scheme-handler",
+            None,
+        );
+        assert!(!matches(&rare, "", "", true));
+        assert!(matches(&rare, "", "", false));
     }
 
     #[test]
