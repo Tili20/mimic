@@ -50,7 +50,11 @@ pub fn is_rare(mime: &str) -> bool {
 
 pub struct Group {
     pub name: &'static str,
+    /// Типы, на которые применяется выбор приложения при Set Default.
     pub mimes: Vec<String>,
+    /// «Представительные» типы: из них строится список приложений
+    /// и определяется текущий дефолт группы.
+    pub app_mimes: Vec<String>,
 }
 
 pub fn groups() -> Vec<Group> {
@@ -63,64 +67,87 @@ pub fn groups() -> Vec<Group> {
             .collect()
     };
 
+    let explicit = |mimes: &[&str]| mimes.iter().map(|m| m.to_string()).collect::<Vec<_>>();
+
+    let terminal = vec![
+        "x-scheme-handler/terminal".to_string(),
+        "application/x-terminal-emulator".to_string(),
+    ];
+
+    let archives = explicit(&[
+        "application/zip",
+        "application/gzip",
+        "application/x-tar",
+        "application/x-compressed-tar",
+        "application/x-7z-compressed",
+        "application/x-rar",
+        "application/x-bzip2",
+        "application/x-xz",
+        "application/zstd",
+    ]);
+
+    let mut text_mimes = with_prefix("text/");
+    text_mimes.extend(explicit(&["application/json", "application/xml", "application/javascript"]));
+
     vec![
         Group {
             name: "Web Browser",
-            mimes: vec!["x-scheme-handler/http".into(), "x-scheme-handler/https".into()],
+            mimes: explicit(&["x-scheme-handler/http", "x-scheme-handler/https"]),
+            app_mimes: explicit(&["x-scheme-handler/http", "x-scheme-handler/https"]),
         },
         Group {
             name: "Text Editor",
-            mimes: with_prefix("text/"),
+            mimes: text_mimes,
+            app_mimes: explicit(&["text/plain", "text/markdown", "application/json"]),
         },
         Group {
             name: "Image Viewer",
             mimes: with_prefix("image/"),
+            app_mimes: explicit(&["image/jpeg", "image/png", "image/gif", "image/webp"]),
         },
         Group {
             name: "Audio Player",
             mimes: with_prefix("audio/"),
+            app_mimes: explicit(&["audio/mpeg", "audio/ogg", "audio/flac", "audio/mp4"]),
         },
         Group {
             name: "Video Player",
             mimes: with_prefix("video/"),
+            app_mimes: explicit(&["video/mp4", "video/webm", "video/x-matroska"]),
         },
         Group {
             name: "Mail Client",
-            mimes: vec!["x-scheme-handler/mailto".into()],
+            mimes: explicit(&["x-scheme-handler/mailto"]),
+            app_mimes: explicit(&["x-scheme-handler/mailto"]),
         },
         Group {
             name: "Calendar",
-            mimes: vec!["text/calendar".into()],
+            mimes: explicit(&["text/calendar"]),
+            app_mimes: explicit(&["text/calendar"]),
         },
         Group {
             name: "File Manager",
-            mimes: vec!["inode/directory".into()],
+            mimes: explicit(&["inode/directory"]),
+            app_mimes: explicit(&["inode/directory"]),
         },
         Group {
             name: "Terminal",
-            mimes: vec!["application/x-terminal-emulator".into()],
+            mimes: terminal.clone(),
+            app_mimes: terminal,
         },
         Group {
             name: "Archiver",
-            mimes: vec![
-                "application/zip".into(),
-                "application/gzip".into(),
-                "application/x-tar".into(),
-                "application/x-compressed-tar".into(),
-                "application/x-7z-compressed".into(),
-                "application/x-rar".into(),
-                "application/x-bzip2".into(),
-                "application/x-xz".into(),
-                "application/zstd".into(),
-            ],
+            mimes: archives.clone(),
+            app_mimes: archives,
         },
         Group {
             name: "Map",
-            mimes: vec![
-                "x-scheme-handler/map".into(),
-                "x-scheme-handler/geo".into(),
-                "x-scheme-handler/maps".into(),
-            ],
+            mimes: explicit(&[
+                "x-scheme-handler/map",
+                "x-scheme-handler/geo",
+                "x-scheme-handler/maps",
+            ]),
+            app_mimes: explicit(&["x-scheme-handler/map", "x-scheme-handler/geo"]),
         },
     ]
 }

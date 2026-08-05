@@ -332,7 +332,12 @@ fn attach_group_row(
     store: &ListStore,
     status: &Label,
 ) {
-    let apps = crate::backend::apps_for_group(&group.mimes);
+    let mut apps = crate::backend::apps_for_group(&group.app_mimes);
+    if apps.is_empty()
+        && let Some(default) = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
+    {
+        apps.push(default);
+    }
 
     let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
     let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
@@ -341,7 +346,7 @@ fn attach_group_row(
     dropdown.set_hexpand(true);
     dropdown.set_valign(Align::Center);
 
-    if let Some(default) = gio::AppInfo::default_for_type(&group.mimes[0], false)
+    if let Some(default) = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
         && let Some(index) = apps.iter().position(|app| app.id() == default.id())
     {
         dropdown.set_selected(index as u32);
