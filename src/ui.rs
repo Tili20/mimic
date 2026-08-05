@@ -7,12 +7,16 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar, Label,
-    ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringList,
+    Align, Box, Button, CheckButton, DropDown, Entry, EventControllerKey, FileDialog, FileFilter,
+    Grid, HeaderBar, Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
+    SignalListItemFactory, SingleSelection, StringList, Window,
 };
 
 use crate::model::MimeType;
+
+type ApplyFn = Rc<dyn Fn(&gio::AppInfo) -> Result<(), glib::Error>>;
+
+const CUSTOM_APP_LABEL: &str = "Custom application…";
 
 mod imp {
     use std::cell::RefCell;
@@ -150,10 +154,11 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     status.set_wrap(true);
 
     let setup_status = status.clone();
+    let setup_window = window.clone();
     let factory = SignalListItemFactory::new();
     factory.connect_setup(move |_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        setup_row(item, &setup_status);
+        setup_row(item, &setup_status, &setup_window);
     });
     factory.connect_bind(|_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
@@ -254,7 +259,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     advanced_root.append(&status);
     advanced_root.add_controller(keys);
 
-    let general_page = build_general_page(&store);
+    let general_page = build_general_page(window, &store);
 
     let notebook = Notebook::new();
     notebook.append_page(&general_page, Some(&Label::new(Some("General"))));
@@ -279,7 +284,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     window.present();
 }
 
-fn build_general_page(store: &ListStore) -> gtk::Box {
+fn build_general_page(window: &gtk::ApplicationWindow, store: &ListStore) -> gtk::Box {
     let status = Label::new(None);
     status.add_css_class("mimic-error");
     status.set_xalign(0.0);
@@ -298,7 +303,7 @@ fn build_general_page(store: &ListStore) -> gtk::Box {
         if group.mimes.is_empty() {
             continue;
         }
-        attach_group_row(&grid, row, &group, store, &status);
+        attach_group_row(&grid, row, &group, store, &status, window);
         row += 1;
     }
 
@@ -320,6 +325,7 @@ fn attach_group_row(
     group: &crate::backend::Group,
     store: &ListStore,
     status: &Label,
+    window: &gtk::ApplicationWindow,
 ) {
     let mut apps = crate::backend::apps_for_group(&group.app_mimes);
     if apps.is_empty()
@@ -328,7 +334,11 @@ fn attach_group_row(
         apps.push(default);
     }
 
-    let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
+    let name_strings: Vec<String> = apps
+        .iter()
+        .map(|app| app.name().to_string())
+        .chain(std::iter::once(CUSTOM_APP_LABEL.to_string()))
+        .collect();
     let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
     let model = StringList::new(&names);
     let dropdown = DropDown::new(Some(model), None::<&gtk::Expression>);
@@ -357,7 +367,7 @@ fn attach_group_row(
     let click_store = store.clone();
     button.connect_clicked(move |_| {
         let index = click_dropdown.selected();
-        if index == u32::MAX {
+        if index == u32::MAX || index as usize == click_apps.len() {
             return;
         }
         let Some(app) = click_apps.get(index as usize) else {
@@ -381,6 +391,32 @@ fn attach_group_row(
     grid.attach(&name_label, 0, row, 1, 1);
     grid.attach(&dropdown, 1, row, 1, 1);
     grid.attach(&button, 2, row, 1, 1);
+
+    let notify_dropdown = dropdown.clone();
+    let notify_apps = apps.clone();
+    let notify_mimes = group.mimes.clone();
+    let notify_store = store.clone();
+    let notify_window = window.clone();
+    let notify_title = group.name.to_string();
+    dropdown.connect_selected_notify(move |_| {
+        let index = notify_dropdown.selected();
+        if index == u32::MAX || index as usize != notify_apps.len() {
+            return;
+        }
+        let apply_mimes = notify_mimes.clone();
+        let apply_store = notify_store.clone();
+        show_custom_app_dialog(&notify_window, &notify_title, Rc::new(move |app| {
+            crate::backend::set_default_group(&apply_mimes, app)?;
+            for i in 0..apply_store.n_items() {
+                if let Some(mime_type) = apply_store.item(i).and_downcast::<MimeType>()
+                    && apply_mimes.iter().any(|m| m.as_str() == mime_type.mime().as_str())
+                {
+                    mime_type.set_default_app(Some(app.name()));
+                }
+            }
+            Ok(())
+        }));
+    });
 }
 
 fn build_menu_button(filter: &MimicFilter) -> MenuButton {
@@ -418,7 +454,131 @@ fn apps_for_dropdown(mime: &str) -> Vec<gio::AppInfo> {
     apps
 }
 
-fn setup_row(item: &gtk::ListItem, status: &Label) {
+fn show_custom_app_dialog(
+    parent_window: &gtk::ApplicationWindow,
+    title: &str,
+    apply: ApplyFn,
+) {
+    let title = Label::new(Some(title));
+    title.add_css_class("mimic-description");
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+
+    let status = Label::new(None);
+    status.add_css_class("mimic-error");
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+
+    let command = Entry::new();
+    command.set_placeholder_text(Some("/path/to/app"));
+    command.set_hexpand(true);
+
+    let browse = Button::builder()
+        .label("Browse…")
+        .valign(Align::Center)
+        .build();
+
+    let command_row = Box::new(gtk::Orientation::Horizontal, 8);
+    command_row.append(&command);
+    command_row.append(&browse);
+
+    let set_button = Button::builder()
+        .label("Set Default")
+        .css_classes(["suggested-action"])
+        .valign(Align::Center)
+        .halign(Align::End)
+        .build();
+
+    let content = Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .margin_top(16)
+        .margin_bottom(16)
+        .margin_start(16)
+        .margin_end(16)
+        .build();
+    content.append(&title);
+    content.append(&command_row);
+    content.append(&status);
+    content.append(&set_button);
+
+    let dialog = Window::builder()
+        .title("Custom application")
+        .default_width(480)
+        .modal(true)
+        .transient_for(parent_window)
+        .child(&content)
+        .build();
+
+    let close_dialog = dialog.clone();
+    let controller = EventControllerKey::new();
+    controller.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            close_dialog.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    dialog.add_controller(controller);
+
+    let file_dialog = FileDialog::builder()
+        .title("Choose executable")
+        .modal(true)
+        .build();
+    let filter = FileFilter::new();
+    filter.set_name(Some("Executables"));
+    filter.add_mime_type("application/x-executable");
+    let filters = gio::ListStore::new::<FileFilter>();
+    filters.append(&filter);
+    file_dialog.set_filters(Some(&filters));
+
+    let dialog_for_browse = dialog.clone();
+    let command_for_browse = command.clone();
+    browse.connect_clicked(move |_| {
+        let command = command_for_browse.clone();
+        file_dialog.clone().open(
+            Some(&dialog_for_browse),
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Ok(file) = result {
+                    command.set_text(&file_path(&file));
+                }
+            },
+        );
+    });
+
+    let dialog_for_set = dialog.clone();
+    let command_for_set = command.clone();
+    let status_for_set = status.clone();
+    set_button.connect_clicked(move |_| {
+        let text = command_for_set.text();
+        let value = text.trim();
+        if value.is_empty() {
+            status_for_set.set_text("Enter a command");
+            return;
+        }
+        match crate::backend::app_from_command(value) {
+            Ok(app) => match apply(&app) {
+                Ok(()) => dialog_for_set.close(),
+                Err(error) => {
+                    status_for_set.set_text(&format!("Failed to set default: {error}"))
+                }
+            },
+            Err(error) => status_for_set.set_text(&format!("Invalid command: {error}")),
+        }
+    });
+
+    dialog.present();
+}
+
+fn file_path(file: &gio::File) -> String {
+    file.path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| file.uri().to_string())
+}
+
+fn setup_row(item: &gtk::ListItem, status: &Label, window: &gtk::ApplicationWindow) {
     let description = Label::new(None);
     description.add_css_class("mimic-description");
     description.set_xalign(0.0);
@@ -463,7 +623,12 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
         let Some(mime_type) = click_item.item().and_downcast::<MimeType>() else {
             return;
         };
-        let Some(app) = apps_for_dropdown(&mime_type.mime()).get(index as usize).cloned() else {
+        let apps = apps_for_dropdown(&mime_type.mime());
+        if index as usize == apps.len() {
+            return;
+        }
+        let click_apps = apps.clone();
+        let Some(app) = click_apps.get(index as usize).cloned() else {
             return;
         };
         match crate::backend::set_default(&mime_type.mime(), &app) {
@@ -475,11 +640,41 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
         }
     });
 
+    let notify_item = item.clone();
+    let notify_window = window.clone();
+    let notify_dropdown = dropdown.clone();
+    let notify_binding = Rc::new(Cell::new(false));
+    let binding = notify_binding.clone();
+    dropdown.connect_selected_notify(move |_| {
+        if notify_binding.get() {
+            return;
+        }
+        let index = notify_dropdown.selected();
+        if index == u32::MAX {
+            return;
+        }
+        let Some(mime_type) = notify_item.item().and_downcast::<MimeType>() else {
+            return;
+        };
+        let apps = apps_for_dropdown(&mime_type.mime());
+        if index as usize != apps.len() {
+            return;
+        }
+        let apply_mime = mime_type.clone();
+        show_custom_app_dialog(&notify_window, &apply_mime.mime(), Rc::new(move |app| {
+            let mime = apply_mime.mime();
+            crate::backend::set_default(&mime, app)?;
+            apply_mime.set_default_app(Some(app.name()));
+            Ok(())
+        }));
+    });
+
     item.set_child(Some(&row));
     unsafe {
         item.set_data("description", description);
         item.set_data("mime", mime);
         item.set_data("dropdown", dropdown);
+        item.set_data("binding", binding);
     }
 }
 
@@ -503,15 +698,20 @@ fn bind_row(item: &gtk::ListItem) {
     let apps = apps_for_dropdown(&mime_type.mime());
 
     let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
-    let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
+    let mut names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
+    names.push(CUSTOM_APP_LABEL);
     let model = StringList::new(&names);
+    let binding = unsafe { item.data::<Rc<Cell<bool>>>("binding").expect("flag is set up").as_ref() };
+    binding.set(true);
     dropdown.set_model(Some(&model));
 
+    dropdown.set_selected(u32::MAX);
     if let Some(default) = gio::AppInfo::default_for_type(&mime_type.mime(), false)
         && let Some(index) = apps.iter().position(|app| app.id() == default.id())
     {
         dropdown.set_selected(index as u32);
     }
+    binding.set(false);
 }
 
 #[cfg(test)]

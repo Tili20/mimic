@@ -48,6 +48,10 @@ pub fn set_default(mime: &str, app: &AppInfo) -> Result<(), glib::Error> {
     app.set_as_default_for_type(mime)
 }
 
+pub fn app_from_command(command: &str) -> Result<AppInfo, glib::Error> {
+    AppInfo::create_from_commandline(command, None, gio::AppInfoCreateFlags::NONE)
+}
+
 pub fn is_rare(mime: &str) -> bool {
     mime.starts_with("x-scheme-handler/")
         || mime.starts_with("inode/")
