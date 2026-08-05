@@ -19,6 +19,11 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application) {
+    let mime_types = backend::load_mime_types();
+    println!("loaded {} mime types", mime_types.len());
+    for mt in mime_types.iter().take(5) {
+        println!("{} | {} | {:?}", mt.mime(), mt.description(), mt.default_app());
+    }
     // Create a button with label and margins
     let button = Button::builder()
         .label("Press me!")
