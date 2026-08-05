@@ -9,6 +9,76 @@ use gtk::{
 
 use crate::model::MimeType;
 
+mod imp {
+    use std::cell::RefCell;
+
+    use glib::Properties;
+    use glib::prelude::*;
+    use glib::subclass::prelude::*;
+    use gtk::subclass::prelude::*;
+
+    #[derive(Properties, Default)]
+    #[properties(wrapper_type = super::MimicFilter)]
+    pub struct MimicFilter {
+        #[property(get, set)]
+        pub search: RefCell<String>,
+        #[property(get, set)]
+        pub category: RefCell<String>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for MimicFilter {
+        const NAME: &'static str = "MimicFilter";
+        type Type = super::MimicFilter;
+        type ParentType = gtk::Filter;
+    }
+
+    impl ObjectImpl for MimicFilter {
+        fn properties() -> &'static [glib::ParamSpec] {
+            Self::derived_properties()
+        }
+
+        fn set_property(&self, id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            self.derived_set_property(id, value, pspec)
+        }
+
+        fn property(&self, id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            self.derived_property(id, pspec)
+        }
+    }
+
+    impl FilterImpl for MimicFilter {
+        fn match_(&self, item: &glib::Object) -> bool {
+            let mime_type = item
+                .downcast_ref::<crate::model::MimeType>()
+                .expect("filtered items are MimeType objects");
+
+            let search = self.search.borrow().to_lowercase();
+            let category = self.category.borrow();
+
+            let category_matches = category.is_empty()
+                || category.as_str() == "All"
+                || mime_type.category() == category.as_str();
+
+            let search_matches = search.is_empty()
+                || mime_type.mime().to_lowercase().contains(&search)
+                || mime_type.description().to_lowercase().contains(&search);
+
+            category_matches && search_matches
+        }
+    }
+}
+
+glib::wrapper! {
+    pub struct MimicFilter(ObjectSubclass<imp::MimicFilter>) @extends gtk::Filter;
+}
+
+impl MimicFilter {
+    pub fn new() -> Self {
+        glib::Object::new()
+    }
+}
+
 const CSS: &str = "
 .mimic-description { font-weight: 700; }
 ";
@@ -44,7 +114,10 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         store.append(mime_type);
     }
 
-    let selection = SingleSelection::new(Some(store));
+    let filter = MimicFilter::new();
+    let filtered = gtk::FilterListModel::new(Some(store), Some(filter.clone()));
+
+    let selection = SingleSelection::new(Some(filtered));
     selection.set_autoselect(false);
 
     let factory = SignalListItemFactory::new();
@@ -81,6 +154,20 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     let category_model = StringList::new(&category_refs);
 
     let dropdown = DropDown::new(Some(category_model), None::<&gtk::Expression>);
+
+    let filter_search = filter.clone();
+    search.connect_search_changed(move |search| {
+        filter_search.set_search(search.text().to_string());
+        filter_search.changed(gtk::FilterChange::Different);
+    });
+
+    let filter_category = filter.clone();
+    dropdown.connect_selected_notify(move |dropdown| {
+        let index = dropdown.selected() as usize;
+        let category = categories.get(index).cloned().unwrap_or_default();
+        filter_category.set_category(category);
+        filter_category.changed(gtk::FilterChange::Different);
+    });
 
     let controls = Box::builder()
         .orientation(gtk::Orientation::Horizontal)
