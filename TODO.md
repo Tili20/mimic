@@ -12,8 +12,8 @@
 - [x] `load_mime_types()` — получить все зарегистрированные MIME-типы
 - [x] Описание типа через `content_type_get_description()`
 - [x] Текущий дефолт через `AppInfo::default_for_type()`
-- [ ] `apps_for(mime)` — список приложений через `AppInfo::all_for_type()`
-- [ ] `set_default(mime, app)` — установка дефолта через `set_as_default_for_type()`
+- [x] `apps_for(mime)` — список приложений через `AppInfo::all_for_type()`
+- [x] `set_default(mime, app)` — установка дефолта через `set_as_default_for_type()`
 
 ## Модель
 

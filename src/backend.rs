@@ -28,3 +28,16 @@ fn category_of(mime: &str) -> String {
         .map(|(category, _)| category.to_string())
         .unwrap_or_else(|| "other".to_string())
 }
+
+pub fn apps_for(mime: &str) -> Vec<AppInfo> {
+    let mut apps = AppInfo::all_for_type(mime)
+        .into_iter()
+        .filter(|app| app.should_show())
+        .collect::<Vec<_>>();
+    apps.sort_by(|a, b| a.name().cmp(&b.name()));
+    apps
+}
+
+pub fn set_default(mime: &str, app: &AppInfo) -> Result<(), glib::Error> {
+    app.set_as_default_for_type(mime)
+}
