@@ -5,7 +5,7 @@
 ## Подготовка
 
 - [x] Добавить зависимости `gio` и `glib` в Cargo.toml
-- [ ] Создать структуру модулей (`main.rs`, `backend.rs`, `model.rs`, `ui.rs`)
+- [x] Создать структуру модулей (`main.rs`, `backend.rs`, `model.rs`, `ui.rs`)
 
 ## Backend (слой данных)
 
@@ -17,8 +17,8 @@
 
 ## Модель
 
-- [ ] `MimeType` — подкласс `glib::Object` с полями mime/description/category/default_app
-- [ ] `#[derive(glib::Properties)]` + `#[glib::object_subclass]` + `glib::wrapper!`
+- [x] `MimeType` — подкласс `glib::Object` с полями mime/description/category/default_app
+- [x] `#[derive(glib::Properties)]` + `#[glib::object_subclass]` + `glib::wrapper!`
 
 ## UI
 

@@ -1,5 +1,10 @@
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, Button, glib};
+
+mod backend;
+mod model;
+mod ui;
+
 const APP_ID: &str = "org.gtk_rs.HelloWorld3";
 
 fn main() -> glib::ExitCode {
