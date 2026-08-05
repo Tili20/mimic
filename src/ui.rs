@@ -1,10 +1,11 @@
 // Сборка интерфейса.
 
 use gio::ListStore;
+use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, DropDown, HeaderBar, Label, ListView, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringList,
+    Align, Box, Button, DropDown, HeaderBar, Label, ListView, Popover, ScrolledWindow,
+    SearchEntry, SignalListItemFactory, SingleSelection, StringList,
 };
 
 use crate::model::MimeType;
@@ -53,18 +54,11 @@ mod imp {
                 .downcast_ref::<crate::model::MimeType>()
                 .expect("filtered items are MimeType objects");
 
-            let search = self.search.borrow().to_lowercase();
-            let category = self.category.borrow();
-
-            let category_matches = category.is_empty()
-                || category.as_str() == "All"
-                || mime_type.category() == category.as_str();
-
-            let search_matches = search.is_empty()
-                || mime_type.mime().to_lowercase().contains(&search)
-                || mime_type.description().to_lowercase().contains(&search);
-
-            category_matches && search_matches
+            super::matches(
+                mime_type,
+                self.search.borrow().as_str(),
+                self.category.borrow().as_str(),
+            )
         }
     }
 }
@@ -79,8 +73,22 @@ impl MimicFilter {
     }
 }
 
+fn matches(mime_type: &MimeType, search: &str, category: &str) -> bool {
+    let search = search.to_lowercase();
+
+    let category_matches =
+        category.is_empty() || category == "All" || mime_type.category() == category;
+
+    let search_matches = search.is_empty()
+        || mime_type.mime().to_lowercase().contains(&search)
+        || mime_type.description().to_lowercase().contains(&search);
+
+    category_matches && search_matches
+}
+
 const CSS: &str = "
 .mimic-description { font-weight: 700; }
+.mimic-error { color: red; }
 ";
 
 pub fn build_ui(app: &gtk::Application) {
@@ -129,9 +137,25 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
         bind_row(item);
     });
+    factory.connect_unbind(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let handler = unsafe { item.data::<glib::SignalHandlerId>("default_notify") };
+        let mime_type = item.item().and_downcast::<MimeType>();
+        if let (Some(handler), Some(mime_type)) = (handler, mime_type) {
+            let handler = unsafe { handler.read() };
+            mime_type.disconnect(handler);
+        }
+    });
 
-    let list_view = ListView::new(Some(selection), Some(factory));
+    let list_view = ListView::new(Some(selection.clone()), Some(factory));
     list_view.set_vexpand(true);
+
+    list_view.connect_activate(move |list_view, position| {
+        let mime_type = selection.item(position).and_downcast::<MimeType>();
+        if let Some(mime_type) = mime_type {
+            show_app_chooser(list_view, &mime_type);
+        }
+    });
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -194,6 +218,156 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     window.present();
 }
 
+fn show_app_chooser(list_view: &ListView, mime_type: &MimeType) {
+    let apps = crate::backend::apps_for(&mime_type.mime());
+
+    let apps_store = ListStore::new::<gio::AppInfo>();
+    for app in &apps {
+        apps_store.append(app);
+    }
+
+    let title = Label::new(Some(&format!("Default for {}", mime_type.mime())));
+    title.add_css_class("mimic-description");
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+
+    let status = Label::new(None);
+    status.add_css_class("mimic-error");
+    status.set_xalign(0.0);
+    status.set_wrap(true);
+
+    let apps_selection = SingleSelection::new(Some(apps_store.clone()));
+    apps_selection.set_autoselect(false);
+
+    let factory = SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        setup_app_row(item);
+    });
+    factory.connect_bind(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        bind_app_row(item);
+    });
+
+    let apps_list = ListView::new(Some(apps_selection.clone()), Some(factory));
+    apps_list.set_vexpand(true);
+
+    let scrolled = ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .max_content_height(300)
+        .child(&apps_list)
+        .build();
+
+    let set_button = Button::builder()
+        .label("Set Default")
+        .css_classes(["suggested-action"])
+        .build();
+
+    let content = Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .width_request(320)
+        .build();
+    content.append(&title);
+    content.append(&scrolled);
+    content.append(&set_button);
+    content.append(&status);
+
+    let popover = Popover::builder().child(&content).build();
+    popover.set_parent(list_view);
+
+    let button_popover = popover.clone();
+    let button_mime = mime_type.clone();
+    let button_status = status.clone();
+    let button_selection = apps_selection.clone();
+    let button_store = apps_store.clone();
+    set_button.connect_clicked(move |_| {
+        if let Some(app) = selected_app(&button_selection, &button_store) {
+            apply_default(&button_popover, &button_mime, &app, &button_status);
+        }
+    });
+
+    let list_popover = popover.clone();
+    let list_mime = mime_type.clone();
+    let list_status = status.clone();
+    let list_selection = apps_selection.clone();
+    let list_store = apps_store.clone();
+    apps_list.connect_activate(move |_, _| {
+        if let Some(app) = selected_app(&list_selection, &list_store) {
+            apply_default(&list_popover, &list_mime, &app, &list_status);
+        }
+    });
+
+    popover.popup();
+}
+
+fn selected_app(selection: &SingleSelection, store: &ListStore) -> Option<gio::AppInfo> {
+    let position = selection.selected();
+    if position == u32::MAX {
+        return None;
+    }
+    store.item(position).and_downcast::<gio::AppInfo>()
+}
+
+fn apply_default(
+    popover: &Popover,
+    mime_type: &MimeType,
+    app: &gio::AppInfo,
+    status: &Label,
+) {
+    match crate::backend::set_default(&mime_type.mime(), app) {
+        Ok(()) => {
+            mime_type.set_default_app(Some(app.name()));
+            popover.popdown();
+        }
+        Err(error) => status.set_text(&format!("Failed to set default: {error}")),
+    }
+}
+
+fn setup_app_row(item: &gtk::ListItem) {
+    let image = gtk::Image::new();
+    image.set_pixel_size(24);
+
+    let name = Label::new(None);
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+    let row = Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_margin_top(4);
+    row.set_margin_bottom(4);
+    row.set_margin_start(6);
+    row.set_margin_end(6);
+    row.append(&image);
+    row.append(&name);
+
+    item.set_child(Some(&row));
+    unsafe {
+        item.set_data("image", image);
+        item.set_data("name", name);
+    }
+}
+
+fn bind_app_row(item: &gtk::ListItem) {
+    let app = item
+        .item()
+        .and_downcast::<gio::AppInfo>()
+        .expect("list item holds an AppInfo");
+
+    let (image, name) = unsafe {
+        (
+            item.data::<gtk::Image>("image").expect("widgets are set up").as_ref(),
+            item.data::<Label>("name").expect("widgets are set up").as_ref(),
+        )
+    };
+
+    name.set_text(&app.name());
+    match app.icon() {
+        Some(icon) => image.set_from_gicon(&icon),
+        None => image.set_icon_name(Some("application-x-executable")),
+    }
+}
+
 fn setup_row(item: &gtk::ListItem) {
     let description = Label::new(None);
     description.add_css_class("mimic-description");
@@ -249,4 +423,65 @@ fn bind_row(item: &gtk::ListItem) {
     description.set_text(&mime_type.description());
     mime.set_text(&mime_type.mime());
     default.set_text(mime_type.default_app().as_deref().unwrap_or("—"));
+
+    if unsafe { item.data::<glib::SignalHandlerId>("default_notify") }.is_none() {
+        let default_label = default.clone();
+        let handler = mime_type.connect_notify_local(Some("default-app"), move |mime_type, _| {
+            default_label.set_text(mime_type.default_app().as_deref().unwrap_or("—"));
+        });
+        unsafe {
+            item.set_data("default_notify", handler);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matches_case(
+        mime: &str,
+        description: &str,
+        item_category: &str,
+        filter_category: &str,
+        search: &str,
+    ) -> bool {
+        let mime_type = MimeType::new(mime, description, item_category, None);
+        matches(&mime_type, search, filter_category)
+    }
+
+    #[test]
+    fn empty_filter_matches_everything() {
+        assert!(matches_case("image/png", "PNG image", "image", "", ""));
+        assert!(matches_case("text/plain", "Plain text", "text", "", ""));
+    }
+
+    #[test]
+    fn category_filters_out_other_categories() {
+        assert!(matches_case("image/png", "PNG image", "image", "image", ""));
+        assert!(!matches_case("text/plain", "Plain text", "text", "image", ""));
+    }
+
+    #[test]
+    fn all_category_matches_everything() {
+        assert!(matches_case("image/png", "PNG image", "image", "All", ""));
+        assert!(matches_case("text/plain", "Plain text", "text", "All", ""));
+    }
+
+    #[test]
+    fn search_matches_mime_type() {
+        assert!(matches_case("image/png", "PNG image", "image", "", "PNG"));
+        assert!(!matches_case("image/png", "PNG image", "image", "", "zip"));
+    }
+
+    #[test]
+    fn search_matches_description() {
+        assert!(matches_case("text/plain", "Plain text", "text", "", "plain"));
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        assert!(matches_case("image/png", "PNG image", "image", "", "png"));
+        assert!(matches_case("text/plain", "Plain text", "text", "", "PLAIN"));
+    }
 }

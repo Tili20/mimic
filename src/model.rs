@@ -16,7 +16,7 @@ mod imp {
         pub description: RefCell<String>,
         #[property(get, set)]
         pub category: RefCell<String>,
-        #[property(get, set)]
+        #[property(nullable, get, set)]
         pub default_app: RefCell<Option<String>>,
     }
 
