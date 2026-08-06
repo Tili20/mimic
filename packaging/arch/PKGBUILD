@@ -3,7 +3,7 @@
 pkgname=mimic
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Управление приложениями по умолчанию для типов файлов (GTK4/GIO)"
+pkgdesc="Default applications manager for file types (GTK4/GIO)"
 arch=('x86_64')
 url="https://github.com/Tili20/mimic"
 license=('MIT')

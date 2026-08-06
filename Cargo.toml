@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Tili20/mimic"
-description = "Менеджер ассоциаций MIME-типов (GTK4/GIO)"
+description = "Default applications manager for file types (GTK4/GIO)"
 
 [dependencies]
 gio = "0.22"

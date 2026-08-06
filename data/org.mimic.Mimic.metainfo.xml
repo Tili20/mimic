@@ -4,16 +4,16 @@
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
   <name>Mimic</name>
-  <summary>Управление приложениями по умолчанию</summary>
+  <summary>Default applications manager</summary>
   <description>
     <p>
-      Mimic — простая утилита для управления ассоциациями «MIME-тип → приложение»
-      в Linux. Позволяет просматривать зарегистрированные типы файлов и выбирать,
-      каким приложением они должны открываться по умолчанию.
+      Mimic is a simple utility for managing MIME type to application
+      associations on Linux. It lets you browse registered file types and choose
+      which application should open them by default.
     </p>
     <p>
-      Приложение ориентировано на минимализм и клавиатурную навигацию, что делает
-      его удобным для пользователей тайлинговых оконных менеджеров.
+      The app focuses on minimalism and keyboard navigation, which makes it
+      convenient for users of tiling window managers.
     </p>
   </description>
   <launchable type="desktop-id">org.mimic.Mimic.desktop</launchable>
