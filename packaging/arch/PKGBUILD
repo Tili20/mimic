@@ -1,0 +1,36 @@
+# Maintainer: Tili20
+
+pkgname=mimic
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Управление приложениями по умолчанию для типов файлов (GTK4/GIO)"
+arch=('x86_64')
+url="https://github.com/Tili20/mimic"
+license=('MIT')
+depends=('gtk4')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Tili20/mimic/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/mimic-$pkgver"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$srcdir/mimic-$pkgver"
+  cargo test --release --locked
+}
+
+package() {
+  cd "$srcdir/mimic-$pkgver"
+
+  install -Dm755 target/release/mimic "$pkgdir/usr/bin/mimic"
+  install -Dm644 data/org.mimic.Mimic.desktop \
+    "$pkgdir/usr/share/applications/org.mimic.Mimic.desktop"
+  install -Dm644 data/org.mimic.Mimic.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.mimic.Mimic.svg"
+  install -Dm644 data/org.mimic.Mimic.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/org.mimic.Mimic.metainfo.xml"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

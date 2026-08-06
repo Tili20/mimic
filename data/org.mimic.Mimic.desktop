@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mimic
+GenericName=Default applications
+Comment=Manage default applications for file types
+Keywords=MIME;associations;default;file type;open with;
+Categories=Utility;
+Exec=mimic
+Icon=org.mimic.Mimic
+Terminal=false
+StartupNotify=true
+StartupWMClass=Mimic

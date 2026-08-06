@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.mimic.Mimic</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Mimic</name>
+  <summary>Управление приложениями по умолчанию</summary>
+  <description>
+    <p>
+      Mimic — простая утилита для управления ассоциациями «MIME-тип → приложение»
+      в Linux. Позволяет просматривать зарегистрированные типы файлов и выбирать,
+      каким приложением они должны открываться по умолчанию.
+    </p>
+    <p>
+      Приложение ориентировано на минимализм и клавиатурную навигацию, что делает
+      его удобным для пользователей тайлинговых оконных менеджеров.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.mimic.Mimic.desktop</launchable>
+  <developer id="io.github.tili20">
+    <name>Tili20</name>
+  </developer>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>mime</keyword>
+    <keyword>default application</keyword>
+    <keyword>file associations</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/Tili20/mimic</url>
+</component>
