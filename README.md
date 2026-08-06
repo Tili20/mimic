@@ -28,10 +28,12 @@ The binary will be at `target/release/mimic`.
 
 ## Installing (Arch Linux)
 
-Build and install the package from `packaging/arch`:
+Build and install the package from `packaging/arch`. The source archive is
+generated locally from the current git tag, so no download is needed.
 
 ```sh
 cd packaging/arch
+./make-src.sh          # creates mimic-0.1.0.tar.gz from tag v0.1.0
 makepkg
 sudo pacman -U mimic-0.1.0-1-x86_64.pkg.tar.zst
 ```

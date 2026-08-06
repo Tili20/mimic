@@ -1,1 +1,3 @@
 /target
+/packaging/arch/*.tar.gz
+/packaging/arch/*.pkg.tar.zst

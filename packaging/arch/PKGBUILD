@@ -9,8 +9,8 @@ url="https://github.com/Tili20/mimic"
 license=('MIT')
 depends=('gtk4')
 makedepends=('cargo' 'rust')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/Tili20/mimic/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('5c0516a23f067d265789e40f9460db57dc9f62079b66b942af7182bdc46d7922')
 
 build() {
   cd "$srcdir/mimic-$pkgver"
