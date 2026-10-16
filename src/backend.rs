@@ -39,14 +39,10 @@ fn category_of(mime: &str) -> String {
 pub fn apps_for(mime: &str) -> Vec<AppInfo> {
     let mut apps = AppInfo::all_for_type(mime)
         .into_iter()
-        .filter(|app| app.should_show())
+        .filter(should_list)
         .collect::<Vec<_>>();
     apps.sort_by_key(|app| app.name());
     apps
-}
-
-pub fn set_default(mime: &str, app: &AppInfo) -> Result<(), glib::Error> {
-    app.set_as_default_for_type(mime)
 }
 
 pub fn is_rare(mime: &str) -> bool {
@@ -213,7 +209,7 @@ pub fn apps_for_group(mimes: &[String]) -> Vec<AppInfo> {
     let mut apps = Vec::new();
     for mime in mimes {
         for app in AppInfo::all_for_type(mime) {
-            if !app.should_show() {
+            if !should_list(&app) {
                 continue;
             }
             if let Some(id) = app.id()
@@ -233,6 +229,221 @@ pub fn set_default_group(mimes: &[String], app: &AppInfo) -> Result<(), glib::Er
         app.set_as_default_for_type(mime)?;
     }
     Ok(())
+}
+
+/// Префикс desktop-файлов, которые создаёт «Other…».
+const DESKTOP_PREFIX: &str = "mimic-";
+
+/// NoDisplay-приложения, созданные mimic, должны оставаться видимы
+/// в списках самого mimic (в приложениях меню они не светятся).
+fn listable(id: Option<&str>, should_show: bool) -> bool {
+    should_show || id.is_some_and(|id| id.starts_with(DESKTOP_PREFIX))
+}
+
+pub fn should_list(app: &AppInfo) -> bool {
+    listable(app.id().as_deref(), app.should_show())
+}
+
+/// Отображаемое имя для созданного приложения: базовое имя бинарника + аргументы.
+pub fn display_name(command: &str) -> String {
+    let mut parts = command.split_whitespace();
+    let program = parts.next().unwrap_or(command);
+    let base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program);
+    let mut name = base.to_string();
+    for part in parts {
+        name.push(' ');
+        name.push_str(part);
+    }
+    name.replace(['\n', '\r'], "")
+}
+
+/// Имя desktop-файла для команды: `mimic-<базовое имя>.desktop`.
+pub fn desktop_file_name(command: &str) -> String {
+    let program = command.split_whitespace().next().unwrap_or("app");
+    let base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("app");
+    let sanitized: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let sanitized = if sanitized.is_empty() {
+        "app".to_string()
+    } else {
+        sanitized
+    };
+    format!("{DESKTOP_PREFIX}{sanitized}.desktop")
+}
+
+/// Первая программа команды: либо весь путь с пробелами, если он существует,
+/// либо первый пробельный токен.
+pub fn command_program(command: &str) -> &str {
+    let trimmed = command.trim();
+    if trimmed.contains(' ') && std::path::Path::new(trimmed).exists() {
+        trimmed
+    } else {
+        trimmed.split_whitespace().next().unwrap_or(trimmed)
+    }
+}
+
+pub fn program_exists(program: &str) -> bool {
+    glib::find_program_in_path(program).is_some()
+}
+
+fn quote_program(command: &str) -> String {
+    let trimmed = command.trim();
+    if !trimmed.starts_with('"')
+        && trimmed.contains(' ')
+        && std::path::Path::new(trimmed).exists()
+    {
+        format!("\"{trimmed}\"")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Для scheme-хендлеров в конец Exec дописывается `%u` (как в KIO),
+/// если команда ещё не содержит плейсхолдеров.
+fn format_exec(command: &str, primary_mime: &str) -> String {
+    let mut exec = quote_program(command);
+    if primary_mime.starts_with("x-scheme-handler/") && !command.contains('%') {
+        exec.push_str(" %u");
+    }
+    exec
+}
+
+fn desktop_file_contents(name: &str, exec: &str, mimes: &[String]) -> String {
+    let mut contents = String::from("[Desktop Entry]\nType=Application\n");
+    contents.push_str(&format!("Name={}\n", name.replace(['\n', '\r'], "")));
+    contents.push_str(&format!("Exec={exec}\n"));
+    contents.push_str("NoDisplay=true\n");
+    if !mimes.is_empty() {
+        contents.push_str(&format!("MimeType={};\n", mimes.join(";")));
+    }
+    contents
+}
+
+fn exec_line(contents: &str) -> Option<&str> {
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("Exec="))
+}
+
+/// Дописывает недостающие MIME-типы в существующий desktop-файл.
+/// Возвращает (новое содержимое, было ли изменение).
+fn merge_mimetype_line(existing: &str, mimes: &[String]) -> (String, bool) {
+    let mut lines: Vec<String> = existing.lines().map(str::to_string).collect();
+    let position = lines.iter().position(|line| line.starts_with("MimeType="));
+    let mut current: Vec<String> = match position {
+        Some(index) => lines[index]["MimeType=".len()..]
+            .split(';')
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let mut changed = false;
+    for mime in mimes {
+        if !current.iter().any(|entry| entry == mime) {
+            current.push(mime.clone());
+            changed = true;
+        }
+    }
+    if !changed {
+        return (existing.to_string(), false);
+    }
+
+    let line = format!("MimeType={};", current.join(";"));
+    match position {
+        Some(index) => lines[index] = line,
+        None => lines.push(line),
+    }
+    let mut merged = lines.join("\n");
+    merged.push('\n');
+    (merged, true)
+}
+
+fn desktop_names(dir: &std::path::Path) -> std::io::Result<std::collections::HashSet<String>> {
+    let mut names = std::collections::HashSet::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if let Some(name) = entry.file_name().to_str()
+            && name.ends_with(".desktop")
+        {
+            names.insert(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
+/// Первое свободное имя вида `base`, `stem-2.desktop`, `stem-3.desktop`, …
+fn unique_desktop_name(
+    base: &str,
+    taken: &std::collections::HashSet<String>,
+) -> String {
+    if !taken.contains(base) {
+        return base.to_string();
+    }
+    let stem = base.strip_suffix(".desktop").unwrap_or(base);
+    let mut number = 2;
+    loop {
+        let candidate = format!("{stem}-{number}.desktop");
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
+/// Создаёт (или переиспользует) desktop-файл в `~/.local/share/applications`
+/// и возвращает его id (= имя файла).
+pub fn write_desktop_file(
+    command: &str,
+    mimes: &[String],
+    primary_mime: &str,
+) -> std::io::Result<String> {
+    let name = desktop_file_name(command);
+    let exec = format_exec(command, primary_mime);
+    let contents = desktop_file_contents(&display_name(command), &exec, mimes);
+
+    let dir = glib::user_data_dir().join("applications");
+    std::fs::create_dir_all(&dir)?;
+
+    let path = dir.join(&name);
+    if path.exists() {
+        let existing = std::fs::read_to_string(&path)?;
+        if exec_line(&existing) == Some(exec.as_str()) {
+            let (merged, changed) = merge_mimetype_line(&existing, mimes);
+            if changed {
+                std::fs::write(&path, merged)?;
+            }
+            return Ok(name);
+        }
+        let taken = desktop_names(&dir)?;
+        let unique = unique_desktop_name(&name, &taken);
+        std::fs::write(dir.join(&unique), contents)?;
+        return Ok(unique);
+    }
+
+    std::fs::write(&path, contents)?;
+    Ok(name)
+}
+
+pub fn find_app(id: &str) -> Option<AppInfo> {
+    AppInfo::all()
+        .into_iter()
+        .find(|app| app.id().as_deref() == Some(id))
 }
 
 #[cfg(test)]
@@ -312,5 +523,102 @@ mod tests {
             .map(|group| (group.name, group.section))
             .collect();
         assert_eq!(actual, expected, "groups must follow the section scheme");
+    }
+
+    #[test]
+    fn desktop_file_contents_sets_required_fields() {
+        let mimes = vec!["application/pdf".to_string(), "text/html".to_string()];
+        let contents = desktop_file_contents("Foo", "foo", &mimes);
+
+        assert!(contents.starts_with("[Desktop Entry]\nType=Application\n"));
+        assert!(contents.contains("Name=Foo\n"));
+        assert!(contents.contains("Exec=foo\n"));
+        assert!(contents.contains("NoDisplay=true\n"));
+        assert!(contents.contains("MimeType=application/pdf;text/html;\n"));
+    }
+
+    #[test]
+    fn desktop_file_contents_skips_empty_mimetype() {
+        let contents = desktop_file_contents("Foo", "foo", &[]);
+        assert!(!contents.contains("MimeType="));
+    }
+
+    #[test]
+    fn exec_appends_u_for_scheme_handlers() {
+        assert_eq!(format_exec("foo", "x-scheme-handler/http"), "foo %u");
+        assert_eq!(format_exec("foo", "x-scheme-handler/tel"), "foo %u");
+    }
+
+    #[test]
+    fn exec_keeps_existing_placeholders() {
+        assert_eq!(format_exec("foo %f", "x-scheme-handler/http"), "foo %f");
+        assert_eq!(format_exec("foo", "application/pdf"), "foo");
+    }
+
+    #[test]
+    fn display_name_strips_directory_and_keeps_args() {
+        assert_eq!(display_name("/usr/bin/foo --bar"), "foo --bar");
+        assert_eq!(display_name("foo"), "foo");
+    }
+
+    #[test]
+    fn desktop_file_name_sanitizes_basename() {
+        assert_eq!(desktop_file_name("/usr/bin/foo"), "mimic-foo.desktop");
+        assert_eq!(desktop_file_name("my tool"), "mimic-my.desktop");
+        assert_eq!(desktop_file_name("/usr/bin/my tool"), "mimic-my.desktop");
+        assert_eq!(desktop_file_name("/"), "mimic-app.desktop");
+    }
+
+    #[test]
+    fn unique_desktop_name_appends_suffix() {
+        let mut taken = std::collections::HashSet::new();
+        taken.insert("mimic-foo.desktop".to_string());
+
+        assert_eq!(
+            unique_desktop_name("mimic-foo.desktop", &taken),
+            "mimic-foo-2.desktop"
+        );
+        taken.insert("mimic-foo-2.desktop".to_string());
+        assert_eq!(
+            unique_desktop_name("mimic-foo.desktop", &taken),
+            "mimic-foo-3.desktop"
+        );
+        assert_eq!(
+            unique_desktop_name("mimic-bar.desktop", &taken),
+            "mimic-bar.desktop"
+        );
+    }
+
+    #[test]
+    fn merge_mimetype_line_adds_missing_types() {
+        let existing = "[Desktop Entry]\nMimeType=application/pdf;\n";
+        let mimes = vec![
+            "application/pdf".to_string(),
+            "application/x-fictionbook".to_string(),
+        ];
+
+        let (merged, changed) = merge_mimetype_line(existing, &mimes);
+        assert!(changed);
+        assert!(merged.contains("MimeType=application/pdf;application/x-fictionbook;\n"));
+
+        let (unchanged, changed_again) = merge_mimetype_line(&merged, &mimes);
+        assert!(!changed_again);
+        assert_eq!(unchanged, merged);
+    }
+
+    #[test]
+    fn listable_keeps_mimic_apps_visible() {
+        assert!(listable(Some("mimic-foo.desktop"), false));
+        assert!(listable(Some("other.desktop"), true));
+        assert!(!listable(Some("other.desktop"), false));
+        assert!(!listable(None, false));
+        assert!(listable(None, true));
+    }
+
+    #[test]
+    fn command_program_prefers_existing_path_with_spaces() {
+        assert_eq!(command_program("firefox --new-window"), "firefox");
+        assert_eq!(command_program("/nonexistent path/with space"), "/nonexistent");
+        assert_eq!(command_program("   "), "");
     }
 }

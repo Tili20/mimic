@@ -175,14 +175,111 @@ fn same_app(one: &gio::AppInfo, other: &gio::AppInfo) -> bool {
     }
 }
 
+const OTHER_LABEL: &str = "Other…";
+
+/// Строка-заглушка, когда приложений нет: занимает позицию autoselect
+/// (GtkSingleSelection всегда выбирает элемент 0 и не позволяет снять
+/// выбор), чтобы клик по «Other…» менял `selected` и срабатывал.
+const EMPTY_LABEL: &str = "No application found";
+
+/// Индекс sentinel-строки «Other…» в модели из `app_count` приложений.
+fn sentinel_index(app_count: usize) -> u32 {
+    app_count as u32 + u32::from(app_count == 0)
+}
+
+/// Пересобирает модель dropdown'а: список приложений (при пустом списке —
+/// строка-заглушка) + sentinel-строка «Other…» в конце. Возвращает индекс
+/// sentinel-строки.
+fn rebuild_dropdown(dropdown: &DropDown, apps: &[gio::AppInfo]) -> u32 {
+    let mut names: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
+    if names.is_empty() {
+        names.push(EMPTY_LABEL.to_string());
+    }
+    names.push(OTHER_LABEL.to_string());
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    dropdown.set_model(Some(&StringList::new(&refs)));
+    sentinel_index(apps.len())
+}
+
+/// Позиция приложения в списке: уже есть — его индекс, нет — добавление
+/// в конец (перед sentinel-строкой «Other…»).
+fn position_or_push(apps: &mut Vec<gio::AppInfo>, app: gio::AppInfo) -> usize {
+    if let Some(position) = apps.iter().position(|existing| same_app(existing, &app)) {
+        return position;
+    }
+    apps.push(app);
+    apps.len() - 1
+}
+
+/// Контекст строки для диалога «Other…»: всё, что нужно, чтобы встроить
+/// выбранное приложение в список и записать pending.
+struct OtherTarget {
+    key: String,
+    mimes: Vec<String>,
+    primary: String,
+    heading: String,
+    dropdown: DropDown,
+    apps: Rc<RefCell<Vec<gio::AppInfo>>>,
+    revert: Rc<Cell<u32>>,
+}
+
+fn open_other(ctx: &ApplyContext, target: OtherTarget) {
+    let window = ctx.window.clone();
+    let ctx = ctx.clone();
+    let heading = target.heading.clone();
+    let mimes = target.mimes.clone();
+    let primary = target.primary.clone();
+    crate::chooser::show_other_dialog(&window, &heading, mimes, primary, move |picked| {
+        finish_other(&ctx, &target, picked);
+    });
+}
+
+/// Итог диалога «Other…»: подтверждённый выбор встраивается в список
+/// и записывается в pending, отмена возвращает предыдущее выделение.
+fn finish_other(ctx: &ApplyContext, target: &OtherTarget, picked: Option<gio::AppInfo>) {
+    let OtherTarget {
+        key,
+        mimes,
+        primary,
+        dropdown,
+        apps,
+        revert,
+        ..
+    } = target;
+    match picked {
+        None => {
+            ctx.rebinding.set(true);
+            dropdown.set_selected(revert.get());
+            ctx.rebinding.set(false);
+        }
+        Some(app) => {
+            let mut list = apps.borrow().clone();
+            let position = position_or_push(&mut list, app);
+            let chosen = list[position].clone();
+
+            ctx.rebinding.set(true);
+            *apps.borrow_mut() = list;
+            rebuild_dropdown(dropdown, &apps.borrow());
+            dropdown.set_selected(position as u32);
+            ctx.rebinding.set(false);
+            revert.set(position as u32);
+
+            let current = gio::AppInfo::default_for_type(primary, false);
+            ctx.record(key, mimes.to_vec(), chosen, current.as_ref());
+        }
+    }
+}
+
 /// Общее состояние для обеих вкладок: ожидающие применения выборы,
-/// кнопка Apply и флаг программного обновления dropdown'ов.
+/// кнопка Apply, флаг программного обновления dropdown'ов и родительское
+/// окно для модальных диалогов.
 #[derive(Clone)]
 struct ApplyContext {
     pending: Rc<RefCell<PendingChanges>>,
     apply: Button,
     status: Label,
     rebinding: Rc<Cell<bool>>,
+    window: gtk::ApplicationWindow,
 }
 
 impl ApplyContext {
@@ -254,6 +351,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         apply,
         status: status.clone(),
         rebinding: Rc::new(Cell::new(false)),
+        window: window.clone(),
     };
 
     let setup_ctx = ctx.clone();
@@ -445,18 +543,22 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
     {
         apps.push(default);
     }
+    let apps = Rc::new(RefCell::new(apps));
 
-    let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
-    let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
-    let model = StringList::new(&names);
-    let dropdown = DropDown::new(Some(model), None::<&gtk::Expression>);
+    let dropdown = DropDown::new(None::<StringList>, None::<&gtk::Expression>);
     dropdown.set_hexpand(true);
     dropdown.set_valign(Align::Center);
 
-    if let Some(default) = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
-        && let Some(index) = apps.iter().position(|app| app.id() == default.id())
-    {
-        dropdown.set_selected(index as u32);
+    let revert = Rc::new(Cell::new(u32::MAX));
+    rebuild_dropdown(&dropdown, &apps.borrow());
+    let initial = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
+        .and_then(|default| apps.borrow().iter().position(|app| same_app(app, &default)));
+    match initial {
+        Some(index) => {
+            dropdown.set_selected(index as u32);
+            revert.set(index as u32);
+        }
+        None => revert.set(dropdown.selected()),
     }
 
     let name_label = Label::new(Some(group.name));
@@ -464,21 +566,45 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
     name_label.set_xalign(0.0);
     name_label.set_valign(Align::Center);
 
-    let row_ctx = ctx.clone();
     let key = group.name.to_string();
     let mimes = group.mimes.clone();
-    let row_apps = apps;
-    let default_mime = group.app_mimes[0].clone();
+    let primary = group.app_mimes[0].clone();
+    let heading = format!("Select default for {}", group.name);
+
+    let notify_ctx = ctx.clone();
+    let notify_apps = apps.clone();
+    let notify_revert = revert.clone();
+    let notify_dropdown = dropdown.clone();
     dropdown.connect_selected_notify(move |dropdown| {
+        if notify_ctx.rebinding.get() {
+            return;
+        }
         let index = dropdown.selected();
         if index == u32::MAX {
             return;
         }
-        let Some(app) = row_apps.get(index as usize).cloned() else {
+        let apps_now = notify_apps.borrow().clone();
+        if index == sentinel_index(apps_now.len()) {
+            open_other(
+                &notify_ctx,
+                OtherTarget {
+                    key: key.clone(),
+                    mimes: mimes.clone(),
+                    primary: primary.clone(),
+                    heading: heading.clone(),
+                    dropdown: notify_dropdown.clone(),
+                    apps: notify_apps.clone(),
+                    revert: notify_revert.clone(),
+                },
+            );
+            return;
+        }
+        let Some(app) = apps_now.get(index as usize).cloned() else {
             return;
         };
-        let current = gio::AppInfo::default_for_type(&default_mime, false);
-        row_ctx.record(&key, mimes.clone(), app, current.as_ref());
+        notify_revert.set(index);
+        let current = gio::AppInfo::default_for_type(&primary, false);
+        notify_ctx.record(&key, mimes.clone(), app, current.as_ref());
     });
 
     grid.attach(&name_label, 0, row, 1, 1);
@@ -550,8 +676,14 @@ fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
     row.append(&first);
     row.append(&mime);
 
+    let apps: Rc<RefCell<Vec<gio::AppInfo>>> = Rc::new(RefCell::new(Vec::new()));
+    let revert = Rc::new(Cell::new(u32::MAX));
+
     let notify_item = item.clone();
     let notify_ctx = ctx.clone();
+    let notify_apps = apps.clone();
+    let notify_revert = revert.clone();
+    let notify_dropdown = dropdown.clone();
     dropdown.connect_selected_notify(move |dropdown| {
         if notify_ctx.rebinding.get() {
             return;
@@ -564,9 +696,27 @@ fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
             return;
         };
         let mime = mime_type.mime();
-        let Some(app) = apps_for_dropdown(&mime).get(index as usize).cloned() else {
+        let apps_now = notify_apps.borrow().clone();
+        if index == sentinel_index(apps_now.len()) {
+            let heading = format!("Select default for {}", mime_type.description());
+            open_other(
+                &notify_ctx,
+                OtherTarget {
+                    key: mime.clone(),
+                    mimes: vec![mime.clone()],
+                    primary: mime.clone(),
+                    heading,
+                    dropdown: notify_dropdown.clone(),
+                    apps: notify_apps.clone(),
+                    revert: notify_revert.clone(),
+                },
+            );
+            return;
+        }
+        let Some(app) = apps_now.get(index as usize).cloned() else {
             return;
         };
+        notify_revert.set(index);
         let current = gio::AppInfo::default_for_type(&mime, false);
         notify_ctx.record(&mime, vec![mime.clone()], app, current.as_ref());
     });
@@ -576,6 +726,8 @@ fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
         item.set_data("description", description);
         item.set_data("mime", mime);
         item.set_data("dropdown", dropdown);
+        item.set_data("apps", apps);
+        item.set_data("revert", revert);
     }
 }
 
@@ -583,40 +735,47 @@ fn bind_row(item: &gtk::ListItem, ctx: &ApplyContext) {
     let mime_type = item
         .item()
         .and_downcast::<MimeType>()
-        .expect("list item holds a MimeType");
+        .expect("item holds a MimeType");
 
-    let (description, mime, dropdown) = unsafe {
+    let (description, mime, dropdown, apps, revert) = unsafe {
         (
             item.data::<Label>("description").expect("widgets are set up").as_ref(),
             item.data::<Label>("mime").expect("widgets are set up").as_ref(),
             item.data::<DropDown>("dropdown").expect("widgets are set up").as_ref(),
+            item
+                .data::<Rc<RefCell<Vec<gio::AppInfo>>>>("apps")
+                .expect("widgets are set up")
+                .as_ref(),
+            item.data::<Rc<Cell<u32>>>("revert")
+                .expect("widgets are set up")
+                .as_ref(),
         )
     };
 
     description.set_text(&mime_type.description());
     mime.set_text(&mime_type.mime());
 
-    let apps = apps_for_dropdown(&mime_type.mime());
-
-    let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
-    let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
-    let model = StringList::new(&names);
-
-    ctx.rebinding.set(true);
-    dropdown.set_model(Some(&model));
-
+    let apps_now = apps_for_dropdown(&mime_type.mime());
     let selected = ctx
         .pending
         .borrow()
         .get(&mime_type.mime())
         .cloned()
         .or_else(|| gio::AppInfo::default_for_type(&mime_type.mime(), false));
-    if let Some(selected) = selected
-        && let Some(index) = apps.iter().position(|app| same_app(app, &selected))
-    {
-        dropdown.set_selected(index as u32);
+    let index = selected.and_then(|selected| {
+        apps_now
+            .iter()
+            .position(|app| same_app(app, &selected))
+    });
+
+    ctx.rebinding.set(true);
+    *apps.borrow_mut() = apps_now;
+    rebuild_dropdown(dropdown, &apps.borrow());
+    if let Some(position) = index {
+        dropdown.set_selected(position as u32);
     }
     ctx.rebinding.set(false);
+    revert.set(dropdown.selected());
 }
 
 fn apply_pending(ctx: &ApplyContext, store: &ListStore) {
@@ -771,5 +930,26 @@ mod tests {
     fn same_app_matches_identical_commandline_apps() {
         assert!(same_app(&app("Foo"), &app("Foo")));
         assert!(!same_app(&app("Foo"), &app("Bar")));
+    }
+
+    #[test]
+    fn position_or_push_appends_new_and_reuses_existing() {
+        let mut apps = Vec::new();
+
+        assert_eq!(position_or_push(&mut apps, app("Foo")), 0);
+        assert_eq!(apps.len(), 1);
+
+        assert_eq!(position_or_push(&mut apps, app("Foo")), 0);
+        assert_eq!(apps.len(), 1, "same app must not be duplicated");
+
+        assert_eq!(position_or_push(&mut apps, app("Bar")), 1);
+        assert_eq!(apps.len(), 2);
+    }
+
+    #[test]
+    fn sentinel_index_leaves_room_for_placeholder() {
+        assert_eq!(sentinel_index(0), 1, "empty list keeps 'Other…' off position 0");
+        assert_eq!(sentinel_index(1), 1);
+        assert_eq!(sentinel_index(4), 4);
     }
 }
