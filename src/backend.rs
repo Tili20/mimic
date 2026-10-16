@@ -82,15 +82,40 @@ pub fn groups() -> Vec<Group> {
     ];
 
     let archives = explicit(&[
-        "application/zip",
-        "application/gzip",
         "application/x-tar",
         "application/x-compressed-tar",
-        "application/x-7z-compressed",
+        "application/x-bzip-compressed-tar",
+        "application/x-tarz",
+        "application/x-xz-compressed-tar",
+        "application/x-lzma-compressed-tar",
+        "application/x-lzip-compressed-tar",
+        "application/x-tzo",
+        "application/x-lrzip-compressed-tar",
+        "application/x-lz4-compressed-tar",
+        "application/x-zstd-compressed-tar",
+        "application/x-cd-image",
+        "application/x-bcpio",
+        "application/x-cpio",
+        "application/x-cpio-compressed",
+        "application/x-sv4cpio",
+        "application/x-sv4crc",
+        "application/x-source-rpm",
+        "application/vnd.ms-cab-compressed",
+        "application/x-xar",
+        "application/x-iso9660-appimage",
+        "application/x-archive",
+        "application/vnd.rar",
         "application/x-rar",
+        "application/x-7z-compressed",
+        "application/zip",
+        "application/x-compress",
+        "application/gzip",
+        "application/x-bzip",
         "application/x-bzip2",
+        "application/x-lzma",
         "application/x-xz",
         "application/zstd",
+        "application/x-lha",
     ]);
 
     let mut text_mimes = with_prefix("text/");
@@ -98,7 +123,12 @@ pub fn groups() -> Vec<Group> {
         "application/json",
         "application/xml",
         "application/javascript",
+        "application/x-docbook+xml",
+        "application/x-yaml",
     ]));
+
+    let mut video_mimes = with_prefix("video/");
+    video_mimes.push("application/x-matroska".to_string());
 
     let office = explicit(&[
         "application/vnd.oasis.opendocument.text",
@@ -158,8 +188,13 @@ pub fn groups() -> Vec<Group> {
         Group {
             name: "Video Player",
             section: "Multimedia",
-            mimes: with_prefix("video/"),
-            app_mimes: explicit(&["video/mp4", "video/webm", "video/x-matroska"]),
+            mimes: video_mimes,
+            app_mimes: explicit(&[
+                "video/mp4",
+                "video/webm",
+                "video/x-matroska",
+                "application/x-matroska",
+            ]),
         },
         Group {
             name: "Text Editor",
@@ -498,6 +533,53 @@ mod tests {
 
         assert_eq!(pdf.mimes, vec!["application/pdf".to_string()]);
         assert_eq!(pdf.app_mimes, vec!["application/pdf".to_string()]);
+    }
+
+    #[test]
+    fn archiver_covers_kde_types() {
+        let groups = groups();
+        let archiver = group(&groups, "Archiver");
+
+        for mime in [
+            "application/x-bzip-compressed-tar",
+            "application/x-lz4-compressed-tar",
+            "application/x-cpio",
+            "application/vnd.ms-cab-compressed",
+            "application/x-source-rpm",
+            "application/x-iso9660-appimage",
+            "application/vnd.rar",
+            "application/x-lha",
+            "application/x-bzip",
+            "application/x-bzip2",
+        ] {
+            assert!(
+                archiver.mimes.iter().any(|m| m == mime),
+                "archiver covers {mime}"
+            );
+        }
+        assert_eq!(archiver.app_mimes, archiver.mimes);
+    }
+
+    #[test]
+    fn video_group_covers_matroska() {
+        let groups = groups();
+        let video = group(&groups, "Video Player");
+
+        assert!(video.mimes.iter().any(|m| m == "application/x-matroska"));
+        assert!(video.app_mimes.iter().any(|m| m == "application/x-matroska"));
+    }
+
+    #[test]
+    fn text_editor_covers_kde_extra_types() {
+        let groups = groups();
+        let editor = group(&groups, "Text Editor");
+
+        for mime in ["application/x-docbook+xml", "application/x-yaml"] {
+            assert!(
+                editor.mimes.iter().any(|m| m == mime),
+                "text editor covers {mime}"
+            );
+        }
     }
 
     #[test]
