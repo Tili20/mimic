@@ -8,8 +8,8 @@ use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
     Align, ActionBar, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
-    Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringList,
+    Image, Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
+    SignalListItemFactory, SingleSelection, StringList, StringObject,
 };
 
 use crate::model::MimeType;
@@ -187,17 +187,86 @@ fn sentinel_index(app_count: usize) -> u32 {
     app_count as u32 + u32::from(app_count == 0)
 }
 
-/// Пересобирает модель dropdown'а: список приложений (при пустом списке —
-/// строка-заглушка) + sentinel-строка «Other…» в конце. Возвращает индекс
-/// sentinel-строки.
-fn rebuild_dropdown(dropdown: &DropDown, apps: &[gio::AppInfo]) -> u32 {
-    let mut names: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
-    if names.is_empty() {
-        names.push(EMPTY_LABEL.to_string());
+/// Элемент модели dropdown'а: приложения и служебные строки.
+#[derive(Debug, PartialEq, Eq)]
+enum DropdownRow {
+    Placeholder,
+    App(usize),
+    Other,
+}
+
+/// Порядок строк dropdown'а: при пустом списке — строка-заглушка,
+/// далее приложения, в конце всегда sentinel-строка «Other…».
+fn dropdown_rows(app_count: usize) -> Vec<DropdownRow> {
+    if app_count == 0 {
+        return vec![DropdownRow::Placeholder, DropdownRow::Other];
     }
-    names.push(OTHER_LABEL.to_string());
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    dropdown.set_model(Some(&StringList::new(&refs)));
+    let mut rows: Vec<DropdownRow> = (0..app_count).map(DropdownRow::App).collect();
+    rows.push(DropdownRow::Other);
+    rows
+}
+
+/// Кастомная фабрика строк dropdown'а: иконка приложения + его имя.
+/// Служебные строки (заглушка, «Other…») идут без иконки.
+fn dropdown_factory() -> SignalListItemFactory {
+    let factory = SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let image = Image::new();
+        image.set_pixel_size(16);
+        let label = Label::new(None);
+        label.set_xalign(0.0);
+        let row = Box::new(gtk::Orientation::Horizontal, 6);
+        row.append(&image);
+        row.append(&label);
+        item.set_child(Some(&row));
+    });
+    factory.connect_bind(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let Some(row) = item.child().and_downcast::<Box>() else {
+            return;
+        };
+        let image = row.first_child().and_downcast::<Image>().expect("icon is set up");
+        let label = image
+            .next_sibling()
+            .and_downcast::<Label>()
+            .expect("label is set up");
+        let Some(item_object) = item.item() else {
+            return;
+        };
+        if let Some(app) = item_object.downcast_ref::<gio::AppInfo>() {
+            label.set_text(&app.display_name());
+            match app.icon() {
+                Some(icon) => image.set_from_gicon(&icon),
+                None => image.set_icon_name(Some("application-x-executable")),
+            }
+            image.set_visible(true);
+        } else if let Some(string) = item_object.downcast_ref::<StringObject>() {
+            label.set_text(&string.string());
+            image.set_visible(false);
+        }
+    });
+    factory
+}
+
+/// Пересобирает модель dropdown'а по `dropdown_rows`. Возвращает индекс
+/// sentinel-строки «Other…».
+fn rebuild_dropdown(dropdown: &DropDown, apps: &[gio::AppInfo]) -> u32 {
+    let store = ListStore::new::<glib::Object>();
+    for row in dropdown_rows(apps.len()) {
+        match row {
+            DropdownRow::Placeholder => {
+                store.append(&StringObject::new(EMPTY_LABEL));
+            }
+            DropdownRow::App(index) => {
+                store.append(&apps[index]);
+            }
+            DropdownRow::Other => {
+                store.append(&StringObject::new(OTHER_LABEL));
+            }
+        }
+    }
+    dropdown.set_model(Some(&store));
     sentinel_index(apps.len())
 }
 
@@ -504,6 +573,9 @@ fn build_general_page(ctx: &ApplyContext) -> gtk::Box {
     grid.set_margin_bottom(12);
     grid.set_margin_start(16);
     grid.set_margin_end(16);
+    grid.set_halign(Align::Center);
+    grid.set_valign(Align::Start);
+    grid.set_width_request(560);
 
     let mut row = 0;
     let mut last_section: Option<&str> = None;
@@ -525,9 +597,12 @@ fn build_general_page(ctx: &ApplyContext) -> gtk::Box {
         row += 1;
     }
 
+    let centered = Box::new(gtk::Orientation::Vertical, 0);
+    centered.append(&grid);
+
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&grid)
+        .child(&centered)
         .build();
     scrolled.set_vexpand(true);
 
@@ -545,7 +620,7 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
     }
     let apps = Rc::new(RefCell::new(apps));
 
-    let dropdown = DropDown::new(None::<StringList>, None::<&gtk::Expression>);
+    let dropdown = DropDown::builder().factory(&dropdown_factory()).build();
     dropdown.set_hexpand(true);
     dropdown.set_valign(Align::Center);
 
@@ -563,7 +638,7 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
 
     let name_label = Label::new(Some(group.name));
     name_label.add_css_class("mimic-description");
-    name_label.set_xalign(0.0);
+    name_label.set_xalign(0.5);
     name_label.set_valign(Align::Center);
 
     let key = group.name.to_string();
@@ -654,7 +729,7 @@ fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
     description.set_hexpand(true);
     description.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
-    let dropdown = DropDown::new(None::<StringList>, None::<&gtk::Expression>);
+    let dropdown = DropDown::builder().factory(&dropdown_factory()).build();
     dropdown.set_valign(Align::Center);
     dropdown.set_width_request(280);
 
@@ -951,5 +1026,18 @@ mod tests {
         assert_eq!(sentinel_index(0), 1, "empty list keeps 'Other…' off position 0");
         assert_eq!(sentinel_index(1), 1);
         assert_eq!(sentinel_index(4), 4);
+    }
+
+    #[test]
+    fn dropdown_rows_place_other_last_and_placeholder_only_when_empty() {
+        use DropdownRow::{App, Other, Placeholder};
+
+        assert_eq!(dropdown_rows(0), vec![Placeholder, Other]);
+        assert_eq!(dropdown_rows(3), vec![App(0), App(1), App(2), Other]);
+        assert_eq!(
+            *dropdown_rows(2).last().unwrap(),
+            Other,
+            "sentinel row is always last"
+        );
     }
 }
