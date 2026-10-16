@@ -58,6 +58,9 @@ pub fn is_rare(mime: &str) -> bool {
 
 pub struct Group {
     pub name: &'static str,
+    /// Подзаголовок-секция на вкладке General (группы с одинаковой
+    /// секцией идут подряд и объединяются общим заголовком).
+    pub section: &'static str,
     /// Типы, на которые применяется выбор приложения при Set Default.
     pub mimes: Vec<String>,
     /// «Представительные» типы: из них строится список приложений
@@ -118,17 +121,66 @@ pub fn groups() -> Vec<Group> {
     vec![
         Group {
             name: "Web Browser",
+            section: "Internet",
             mimes: explicit(&["x-scheme-handler/http", "x-scheme-handler/https"]),
             app_mimes: explicit(&["x-scheme-handler/http", "x-scheme-handler/https"]),
         },
         Group {
+            name: "Calendar",
+            section: "Internet",
+            mimes: explicit(&["text/calendar"]),
+            app_mimes: explicit(&["text/calendar"]),
+        },
+        Group {
+            name: "Mail Client",
+            section: "Internet",
+            mimes: explicit(&["x-scheme-handler/mailto"]),
+            app_mimes: explicit(&["x-scheme-handler/mailto"]),
+        },
+        Group {
+            name: "Map",
+            section: "Internet",
+            mimes: explicit(&[
+                "x-scheme-handler/map",
+                "x-scheme-handler/geo",
+                "x-scheme-handler/maps",
+            ]),
+            app_mimes: explicit(&["x-scheme-handler/map", "x-scheme-handler/geo"]),
+        },
+        Group {
+            name: "Image Viewer",
+            section: "Multimedia",
+            mimes: with_prefix("image/"),
+            app_mimes: explicit(&["image/jpeg", "image/png", "image/gif", "image/webp"]),
+        },
+        Group {
+            name: "Audio Player",
+            section: "Multimedia",
+            mimes: with_prefix("audio/"),
+            app_mimes: explicit(&["audio/mpeg", "audio/ogg", "audio/flac", "audio/mp4"]),
+        },
+        Group {
+            name: "Video Player",
+            section: "Multimedia",
+            mimes: with_prefix("video/"),
+            app_mimes: explicit(&["video/mp4", "video/webm", "video/x-matroska"]),
+        },
+        Group {
             name: "Text Editor",
+            section: "Documents",
             mimes: text_mimes,
             app_mimes: explicit(&["text/plain", "text/markdown", "application/json"]),
         },
         Group {
+            name: "PDF Viewer",
+            section: "Documents",
+            mimes: explicit(&["application/pdf"]),
+            app_mimes: explicit(&["application/pdf"]),
+        },
+        Group {
             name: "Office documents",
-            mimes: office.clone(),
+            section: "Documents",
+            mimes: office,
             app_mimes: explicit(&[
                 "application/vnd.oasis.opendocument.text",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -136,58 +188,22 @@ pub fn groups() -> Vec<Group> {
             ]),
         },
         Group {
-            name: "PDF Viewer",
-            mimes: explicit(&["application/pdf"]),
-            app_mimes: explicit(&["application/pdf"]),
-        },
-        Group {
-            name: "Image Viewer",
-            mimes: with_prefix("image/"),
-            app_mimes: explicit(&["image/jpeg", "image/png", "image/gif", "image/webp"]),
-        },
-        Group {
-            name: "Audio Player",
-            mimes: with_prefix("audio/"),
-            app_mimes: explicit(&["audio/mpeg", "audio/ogg", "audio/flac", "audio/mp4"]),
-        },
-        Group {
-            name: "Video Player",
-            mimes: with_prefix("video/"),
-            app_mimes: explicit(&["video/mp4", "video/webm", "video/x-matroska"]),
-        },
-        Group {
-            name: "Mail Client",
-            mimes: explicit(&["x-scheme-handler/mailto"]),
-            app_mimes: explicit(&["x-scheme-handler/mailto"]),
-        },
-        Group {
-            name: "Calendar",
-            mimes: explicit(&["text/calendar"]),
-            app_mimes: explicit(&["text/calendar"]),
-        },
-        Group {
-            name: "File Manager",
-            mimes: explicit(&["inode/directory"]),
-            app_mimes: explicit(&["inode/directory"]),
-        },
-        Group {
             name: "Terminal",
+            section: "System",
             mimes: terminal.clone(),
             app_mimes: terminal,
         },
         Group {
-            name: "Archiver",
-            mimes: archives.clone(),
-            app_mimes: archives,
+            name: "File Manager",
+            section: "System",
+            mimes: explicit(&["inode/directory"]),
+            app_mimes: explicit(&["inode/directory"]),
         },
         Group {
-            name: "Map",
-            mimes: explicit(&[
-                "x-scheme-handler/map",
-                "x-scheme-handler/geo",
-                "x-scheme-handler/maps",
-            ]),
-            app_mimes: explicit(&["x-scheme-handler/map", "x-scheme-handler/geo"]),
+            name: "Archiver",
+            section: "System",
+            mimes: archives.clone(),
+            app_mimes: archives,
         },
     ]
 }
@@ -271,5 +287,30 @@ mod tests {
 
         assert_eq!(pdf.mimes, vec!["application/pdf".to_string()]);
         assert_eq!(pdf.app_mimes, vec!["application/pdf".to_string()]);
+    }
+
+    #[test]
+    fn groups_follow_section_scheme() {
+        let expected = [
+            ("Web Browser", "Internet"),
+            ("Calendar", "Internet"),
+            ("Mail Client", "Internet"),
+            ("Map", "Internet"),
+            ("Image Viewer", "Multimedia"),
+            ("Audio Player", "Multimedia"),
+            ("Video Player", "Multimedia"),
+            ("Text Editor", "Documents"),
+            ("PDF Viewer", "Documents"),
+            ("Office documents", "Documents"),
+            ("Terminal", "System"),
+            ("File Manager", "System"),
+            ("Archiver", "System"),
+        ];
+
+        let actual: Vec<_> = groups()
+            .iter()
+            .map(|group| (group.name, group.section))
+            .collect();
+        assert_eq!(actual, expected, "groups must follow the section scheme");
     }
 }

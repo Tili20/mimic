@@ -408,9 +408,20 @@ fn build_general_page(ctx: &ApplyContext) -> gtk::Box {
     grid.set_margin_end(16);
 
     let mut row = 0;
+    let mut last_section: Option<&str> = None;
     for group in crate::backend::groups() {
         if group.mimes.is_empty() {
             continue;
+        }
+        if last_section != Some(group.section) {
+            let header = Label::new(Some(group.section));
+            header.add_css_class("heading");
+            header.set_halign(Align::Center);
+            header.set_margin_top(if row == 0 { 0 } else { 16 });
+            header.set_margin_bottom(4);
+            grid.attach(&header, 0, row, 2, 1);
+            row += 1;
+            last_section = Some(group.section);
         }
         attach_group_row(&grid, row, &group, ctx);
         row += 1;
