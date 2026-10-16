@@ -101,6 +101,20 @@ pub fn groups() -> Vec<Group> {
         "application/javascript",
     ]));
 
+    let office = explicit(&[
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/vnd.oasis.opendocument.graphics",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/rtf",
+    ]);
+
     vec![
         Group {
             name: "Web Browser",
@@ -111,6 +125,20 @@ pub fn groups() -> Vec<Group> {
             name: "Text Editor",
             mimes: text_mimes,
             app_mimes: explicit(&["text/plain", "text/markdown", "application/json"]),
+        },
+        Group {
+            name: "Office documents",
+            mimes: office.clone(),
+            app_mimes: explicit(&[
+                "application/vnd.oasis.opendocument.text",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ]),
+        },
+        Group {
+            name: "PDF Viewer",
+            mimes: explicit(&["application/pdf"]),
+            app_mimes: explicit(&["application/pdf"]),
         },
         Group {
             name: "Image Viewer",
@@ -189,4 +217,59 @@ pub fn set_default_group(mimes: &[String], app: &AppInfo) -> Result<(), glib::Er
         app.set_as_default_for_type(mime)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn group<'a>(groups: &'a [Group], name: &str) -> &'a Group {
+        groups
+            .iter()
+            .find(|group| group.name == name)
+            .unwrap_or_else(|| panic!("group {name:?} exists"))
+    }
+
+    #[test]
+    fn office_group_contains_core_types_and_no_pdf() {
+        let groups = groups();
+        let office = group(&groups, "Office documents");
+
+        for mime in [
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/rtf",
+        ] {
+            assert!(
+                office.mimes.iter().any(|m| m == mime),
+                "office group covers {mime}"
+            );
+        }
+        assert!(!office.mimes.iter().any(|m| m == "application/pdf"));
+    }
+
+    #[test]
+    fn office_group_representative_mimes_are_subset() {
+        let groups = groups();
+        let office = group(&groups, "Office documents");
+
+        assert!(!office.app_mimes.is_empty());
+        assert!(
+            office
+                .app_mimes
+                .iter()
+                .all(|mime| office.mimes.contains(mime)),
+            "app_mimes must be a subset of mimes"
+        );
+    }
+
+    #[test]
+    fn pdf_group_is_pdf_only() {
+        let groups = groups();
+        let pdf = group(&groups, "PDF Viewer");
+
+        assert_eq!(pdf.mimes, vec!["application/pdf".to_string()]);
+        assert_eq!(pdf.app_mimes, vec!["application/pdf".to_string()]);
+    }
 }
