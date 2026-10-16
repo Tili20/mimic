@@ -8,19 +8,15 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    ActionBar, Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
-    Image, Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringObject, TreeExpander, TreeListModel, TreeListRow,
+    ActionBar, Align, Box, Button, DropDown, EventControllerKey, Grid, HeaderBar, Image, Label,
+    ListView, Notebook, ScrolledWindow, SearchEntry, SignalListItemFactory, SingleSelection,
+    StringObject, TreeExpander, TreeListModel, TreeListRow,
 };
 
 use crate::model::{MimeGroup, MimeType};
 
-fn matches(mime_type: &MimeType, search: &str, category: &str, hide_rare: bool) -> bool {
+fn matches(mime_type: &MimeType, search: &str, category: &str) -> bool {
     let search = search.to_lowercase();
-
-    if hide_rare && crate::backend::is_rare(&mime_type.mime()) {
-        return false;
-    }
 
     let category_matches =
         category.is_empty() || category == "All" || mime_type.category() == category;
@@ -337,9 +333,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         store.append(mime_type);
     }
 
-    let hide_rare = Rc::new(Cell::new(true));
-
-    let selection = SingleSelection::new(Some(build_advanced_tree(&store, "", hide_rare.get())));
+    let selection = SingleSelection::new(Some(build_advanced_tree(&store, "")));
     selection.set_autoselect(false);
 
     let status = Label::new(None);
@@ -417,9 +411,8 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         let store = store.clone();
         let selection = selection.clone();
         let search = search.clone();
-        let hide_rare = hide_rare.clone();
         Rc::new(move || {
-            let tree = build_advanced_tree(&store, &search.text(), hide_rare.get());
+            let tree = build_advanced_tree(&store, &search.text());
             selection.set_model(Some(&tree));
         })
     };
@@ -491,11 +484,8 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         }
     });
 
-    let menu_button = build_menu_button(hide_rare.clone(), rebuild.clone());
-
     let header = HeaderBar::new();
     header.set_title_widget(Some(&gtk::Label::new(Some("Mimic"))));
-    header.pack_end(&menu_button);
 
     let action_bar = ActionBar::new();
     action_bar.pack_start(&status);
@@ -643,33 +633,9 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
     grid.attach(&dropdown, 1, row, 1, 1);
 }
 
-fn build_menu_button(hide_rare: Rc<Cell<bool>>, on_toggle: Rc<dyn Fn()>) -> MenuButton {
-    let check = CheckButton::builder()
-        .label("Hide rarely used MIME types")
-        .active(hide_rare.get())
-        .margin_top(8)
-        .margin_bottom(8)
-        .margin_start(8)
-        .margin_end(8)
-        .build();
-
-    check.connect_toggled(move |check| {
-        hide_rare.set(check.is_active());
-        on_toggle();
-    });
-
-    let popover = Popover::new();
-    popover.set_child(Some(&check));
-
-    MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .popover(&popover)
-        .build()
-}
-
 /// Группирует типы по категориям для дерева вкладки Advanced с учётом
-/// поиска и фильтра «редких» типов. Категории сохраняют порядок появления.
-fn advanced_groups(store: &ListStore, search: &str, hide_rare: bool) -> Vec<(String, ListStore)> {
+/// поиска. Категории сохраняют порядок появления.
+fn advanced_groups(store: &ListStore, search: &str) -> Vec<(String, ListStore)> {
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, ListStore> = HashMap::new();
 
@@ -677,7 +643,7 @@ fn advanced_groups(store: &ListStore, search: &str, hide_rare: bool) -> Vec<(Str
         let Some(mime_type) = store.item(index).and_downcast::<MimeType>() else {
             continue;
         };
-        if !matches(&mime_type, search, "", hide_rare) {
+        if !matches(&mime_type, search, "") {
             continue;
         }
         let category = mime_type.category().to_string();
@@ -699,9 +665,9 @@ fn advanced_groups(store: &ListStore, search: &str, hide_rare: bool) -> Vec<(Str
 
 /// Строит дерево «категория → типы». При непустом поиске узлы раскрыты,
 /// чтобы найденные типы были видны сразу.
-fn build_advanced_tree(store: &ListStore, search: &str, hide_rare: bool) -> TreeListModel {
+fn build_advanced_tree(store: &ListStore, search: &str) -> TreeListModel {
     let autoexpand = !search.trim().is_empty();
-    let groups = advanced_groups(store, search, hide_rare);
+    let groups = advanced_groups(store, search);
     let children: HashMap<String, ListStore> = groups
         .iter()
         .map(|(category, types)| (category.clone(), types.clone()))
@@ -866,19 +832,7 @@ mod tests {
         search: &str,
     ) -> bool {
         let mime_type = MimeType::new(mime, description, item_category, None);
-        matches(&mime_type, search, filter_category, false)
-    }
-
-    #[test]
-    fn hide_rare_hides_junk_types() {
-        let rare = MimeType::new(
-            "x-scheme-handler/http",
-            "URL handler for http",
-            "x-scheme-handler",
-            None,
-        );
-        assert!(!matches(&rare, "", "", true));
-        assert!(matches(&rare, "", "", false));
+        matches(&mime_type, search, filter_category)
     }
 
     #[test]
@@ -950,7 +904,7 @@ mod tests {
             ("image/jpeg", "JPEG image", "image"),
         ]);
 
-        let groups = advanced_groups(&store, "", false);
+        let groups = advanced_groups(&store, "");
 
         let categories: Vec<&str> = groups.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(categories, vec!["image", "text"]);
@@ -965,19 +919,11 @@ mod tests {
             ("text/plain", "Plain text", "text"),
         ]);
 
-        let groups = advanced_groups(&store, "png", false);
+        let groups = advanced_groups(&store, "png");
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, "image");
         assert_eq!(groups[0].1.n_items(), 1);
-    }
-
-    #[test]
-    fn advanced_groups_hides_rare_types() {
-        let store = mime_store(&[("x-scheme-handler/http", "URL handler", "x-scheme-handler")]);
-
-        assert!(advanced_groups(&store, "", true).is_empty());
-        assert_eq!(advanced_groups(&store, "", false).len(), 1);
     }
 
     fn app(name: &str) -> gio::AppInfo {

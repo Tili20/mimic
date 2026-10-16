@@ -36,13 +36,6 @@ fn category_of(mime: &str) -> String {
         .unwrap_or_else(|| "other".to_string())
 }
 
-pub fn is_rare(mime: &str) -> bool {
-    mime.starts_with("x-scheme-handler/")
-        || mime.starts_with("inode/")
-        || mime.starts_with("application/x-")
-        || mime == "application/octet-stream"
-}
-
 pub struct Group {
     pub name: &'static str,
     /// Подзаголовок-секция на вкладке General (группы с одинаковой
