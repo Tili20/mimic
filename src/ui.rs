@@ -1,14 +1,14 @@
 // Сборка интерфейса.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar, Label,
-    ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
+    Align, ActionBar, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
+    Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
     SignalListItemFactory, SingleSelection, StringList,
 };
 
@@ -107,6 +107,100 @@ const CSS: &str = "
 .mimic-error { color: red; }
 ";
 
+struct PendingChange {
+    key: String,
+    mimes: Vec<String>,
+    app: gio::AppInfo,
+}
+
+/// Выборы, сделанные в UI, но ещё не записанные на диск.
+/// Записи хранятся в порядке появления, ключ уникален
+/// (имя группы на вкладке General, mime-тип на вкладке Advanced).
+#[derive(Default)]
+struct PendingChanges {
+    changes: Vec<PendingChange>,
+}
+
+impl PendingChanges {
+    fn select(
+        &mut self,
+        key: &str,
+        mimes: Vec<String>,
+        app: gio::AppInfo,
+        current_default: Option<&gio::AppInfo>,
+    ) {
+        if current_default.is_some_and(|current| same_app(&app, current)) {
+            self.remove(key);
+            return;
+        }
+        if let Some(change) = self.changes.iter_mut().find(|change| change.key == key) {
+            change.mimes = mimes;
+            change.app = app;
+            return;
+        }
+        self.changes.push(PendingChange {
+            key: key.to_string(),
+            mimes,
+            app,
+        });
+    }
+
+    fn get(&self, key: &str) -> Option<&gio::AppInfo> {
+        self.changes
+            .iter()
+            .find(|change| change.key == key)
+            .map(|change| &change.app)
+    }
+
+    fn entries(&self) -> Vec<(String, Vec<String>, gio::AppInfo)> {
+        self.changes
+            .iter()
+            .map(|change| (change.key.clone(), change.mimes.clone(), change.app.clone()))
+            .collect()
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.changes.retain(|change| change.key != key);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
+}
+
+fn same_app(one: &gio::AppInfo, other: &gio::AppInfo) -> bool {
+    match (one.id(), other.id()) {
+        (Some(one_id), Some(other_id)) => one_id == other_id,
+        _ => one.name() == other.name(),
+    }
+}
+
+/// Общее состояние для обеих вкладок: ожидающие применения выборы,
+/// кнопка Apply и флаг программного обновления dropdown'ов.
+#[derive(Clone)]
+struct ApplyContext {
+    pending: Rc<RefCell<PendingChanges>>,
+    apply: Button,
+    status: Label,
+    rebinding: Rc<Cell<bool>>,
+}
+
+impl ApplyContext {
+    fn record(
+        &self,
+        key: &str,
+        mimes: Vec<String>,
+        app: gio::AppInfo,
+        current_default: Option<&gio::AppInfo>,
+    ) {
+        self.pending
+            .borrow_mut()
+            .select(key, mimes, app, current_default);
+        self.apply
+            .set_sensitive(!self.pending.borrow().is_empty());
+    }
+}
+
 pub fn build_ui(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -149,15 +243,29 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     status.set_xalign(0.0);
     status.set_wrap(true);
 
-    let setup_status = status.clone();
+    let apply = Button::builder()
+        .label("Apply")
+        .css_classes(["suggested-action"])
+        .sensitive(false)
+        .build();
+
+    let ctx = ApplyContext {
+        pending: Rc::new(RefCell::new(PendingChanges::default())),
+        apply,
+        status: status.clone(),
+        rebinding: Rc::new(Cell::new(false)),
+    };
+
+    let setup_ctx = ctx.clone();
     let factory = SignalListItemFactory::new();
     factory.connect_setup(move |_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        setup_row(item, &setup_status);
+        setup_row(item, &setup_ctx);
     });
-    factory.connect_bind(|_, object| {
+    let bind_ctx = ctx.clone();
+    factory.connect_bind(move |_, object| {
         let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
-        bind_row(item);
+        bind_row(item, &bind_ctx);
     });
 
     let list_view = ListView::new(Some(selection.clone()), Some(factory));
@@ -251,10 +359,9 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         .build();
     advanced_root.append(&controls);
     advanced_root.append(&scrolled);
-    advanced_root.append(&status);
     advanced_root.add_controller(keys);
 
-    let general_page = build_general_page(&store);
+    let general_page = build_general_page(&ctx);
 
     let notebook = Notebook::new();
     notebook.append_page(&general_page, Some(&Label::new(Some("General"))));
@@ -274,17 +381,24 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     header.set_title_widget(Some(&gtk::Label::new(Some("Mimic"))));
     header.pack_end(&menu_button);
 
+    let action_bar = ActionBar::new();
+    action_bar.pack_start(&status);
+    action_bar.pack_end(&ctx.apply);
+
+    let click_ctx = ctx.clone();
+    let click_store = store.clone();
+    ctx.apply.connect_clicked(move |_| apply_pending(&click_ctx, &click_store));
+
+    let body = Box::builder().orientation(gtk::Orientation::Vertical).build();
+    body.append(&notebook);
+    body.append(&action_bar);
+
     window.set_titlebar(Some(&header));
-    window.set_child(Some(&notebook));
+    window.set_child(Some(&body));
     window.present();
 }
 
-fn build_general_page(store: &ListStore) -> gtk::Box {
-    let status = Label::new(None);
-    status.add_css_class("mimic-error");
-    status.set_xalign(0.0);
-    status.set_wrap(true);
-
+fn build_general_page(ctx: &ApplyContext) -> gtk::Box {
     let grid = Grid::new();
     grid.set_column_spacing(8);
     grid.set_row_spacing(6);
@@ -298,7 +412,7 @@ fn build_general_page(store: &ListStore) -> gtk::Box {
         if group.mimes.is_empty() {
             continue;
         }
-        attach_group_row(&grid, row, &group, store, &status);
+        attach_group_row(&grid, row, &group, ctx);
         row += 1;
     }
 
@@ -310,17 +424,10 @@ fn build_general_page(store: &ListStore) -> gtk::Box {
 
     let page = Box::builder().orientation(gtk::Orientation::Vertical).build();
     page.append(&scrolled);
-    page.append(&status);
     page
 }
 
-fn attach_group_row(
-    grid: &Grid,
-    row: i32,
-    group: &crate::backend::Group,
-    store: &ListStore,
-    status: &Label,
-) {
+fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &ApplyContext) {
     let mut apps = crate::backend::apps_for_group(&group.app_mimes);
     if apps.is_empty()
         && let Some(default) = gio::AppInfo::default_for_type(&group.app_mimes[0], false)
@@ -346,41 +453,25 @@ fn attach_group_row(
     name_label.set_xalign(0.0);
     name_label.set_valign(Align::Center);
 
-    let button = Button::with_label("Set Default");
-    button.set_halign(Align::Start);
-    button.set_valign(Align::Center);
-
-    let click_dropdown = dropdown.clone();
-    let click_status = status.clone();
-    let click_mimes = group.mimes.clone();
-    let click_apps = apps.clone();
-    let click_store = store.clone();
-    button.connect_clicked(move |_| {
-        let index = click_dropdown.selected();
+    let row_ctx = ctx.clone();
+    let key = group.name.to_string();
+    let mimes = group.mimes.clone();
+    let row_apps = apps;
+    let default_mime = group.app_mimes[0].clone();
+    dropdown.connect_selected_notify(move |dropdown| {
+        let index = dropdown.selected();
         if index == u32::MAX {
             return;
         }
-        let Some(app) = click_apps.get(index as usize) else {
+        let Some(app) = row_apps.get(index as usize).cloned() else {
             return;
         };
-        match crate::backend::set_default_group(&click_mimes, app) {
-            Ok(()) => {
-                click_status.set_text("");
-                for i in 0..click_store.n_items() {
-                    if let Some(mime_type) = click_store.item(i).and_downcast::<MimeType>()
-                        && click_mimes.iter().any(|m| m.as_str() == mime_type.mime().as_str())
-                    {
-                        mime_type.set_default_app(Some(app.name()));
-                    }
-                }
-            }
-            Err(error) => click_status.set_text(&format!("Failed to set default: {error}")),
-        }
+        let current = gio::AppInfo::default_for_type(&default_mime, false);
+        row_ctx.record(&key, mimes.clone(), app, current.as_ref());
     });
 
     grid.attach(&name_label, 0, row, 1, 1);
     grid.attach(&dropdown, 1, row, 1, 1);
-    grid.attach(&button, 2, row, 1, 1);
 }
 
 fn build_menu_button(filter: &MimicFilter) -> MenuButton {
@@ -418,7 +509,7 @@ fn apps_for_dropdown(mime: &str) -> Vec<gio::AppInfo> {
     apps
 }
 
-fn setup_row(item: &gtk::ListItem, status: &Label) {
+fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
     let description = Label::new(None);
     description.add_css_class("mimic-description");
     description.set_xalign(0.0);
@@ -430,13 +521,9 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
     dropdown.set_valign(Align::Center);
     dropdown.set_width_request(280);
 
-    let set_button = Button::with_label("Set Default");
-    set_button.set_valign(Align::Center);
-
     let first = Box::new(gtk::Orientation::Horizontal, 8);
     first.append(&description);
     first.append(&dropdown);
-    first.append(&set_button);
 
     let mime = Label::new(None);
     mime.add_css_class("monospace");
@@ -452,27 +539,25 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
     row.append(&first);
     row.append(&mime);
 
-    let click_item = item.clone();
-    let click_dropdown = dropdown.clone();
-    let click_status = status.clone();
-    set_button.connect_clicked(move |_| {
-        let index = click_dropdown.selected();
+    let notify_item = item.clone();
+    let notify_ctx = ctx.clone();
+    dropdown.connect_selected_notify(move |dropdown| {
+        if notify_ctx.rebinding.get() {
+            return;
+        }
+        let index = dropdown.selected();
         if index == u32::MAX {
             return;
         }
-        let Some(mime_type) = click_item.item().and_downcast::<MimeType>() else {
+        let Some(mime_type) = notify_item.item().and_downcast::<MimeType>() else {
             return;
         };
-        let Some(app) = apps_for_dropdown(&mime_type.mime()).get(index as usize).cloned() else {
+        let mime = mime_type.mime();
+        let Some(app) = apps_for_dropdown(&mime).get(index as usize).cloned() else {
             return;
         };
-        match crate::backend::set_default(&mime_type.mime(), &app) {
-            Ok(()) => {
-                click_status.set_text("");
-                mime_type.set_default_app(Some(app.name()));
-            }
-            Err(error) => click_status.set_text(&format!("Failed to set default: {error}")),
-        }
+        let current = gio::AppInfo::default_for_type(&mime, false);
+        notify_ctx.record(&mime, vec![mime.clone()], app, current.as_ref());
     });
 
     item.set_child(Some(&row));
@@ -483,7 +568,7 @@ fn setup_row(item: &gtk::ListItem, status: &Label) {
     }
 }
 
-fn bind_row(item: &gtk::ListItem) {
+fn bind_row(item: &gtk::ListItem, ctx: &ApplyContext) {
     let mime_type = item
         .item()
         .and_downcast::<MimeType>()
@@ -505,13 +590,42 @@ fn bind_row(item: &gtk::ListItem) {
     let name_strings: Vec<String> = apps.iter().map(|app| app.name().to_string()).collect();
     let names: Vec<&str> = name_strings.iter().map(String::as_str).collect();
     let model = StringList::new(&names);
+
+    ctx.rebinding.set(true);
     dropdown.set_model(Some(&model));
 
-    if let Some(default) = gio::AppInfo::default_for_type(&mime_type.mime(), false)
-        && let Some(index) = apps.iter().position(|app| app.id() == default.id())
+    let selected = ctx
+        .pending
+        .borrow()
+        .get(&mime_type.mime())
+        .cloned()
+        .or_else(|| gio::AppInfo::default_for_type(&mime_type.mime(), false));
+    if let Some(selected) = selected
+        && let Some(index) = apps.iter().position(|app| same_app(app, &selected))
     {
         dropdown.set_selected(index as u32);
     }
+    ctx.rebinding.set(false);
+}
+
+fn apply_pending(ctx: &ApplyContext, store: &ListStore) {
+    let entries = ctx.pending.borrow().entries();
+    for (key, mimes, app) in entries {
+        if let Err(error) = crate::backend::set_default_group(&mimes, &app) {
+            ctx.status.set_text(&format!("Failed to set default: {error}"));
+            return;
+        }
+        for i in 0..store.n_items() {
+            if let Some(mime_type) = store.item(i).and_downcast::<MimeType>()
+                && mimes.iter().any(|m| m.as_str() == mime_type.mime().as_str())
+            {
+                mime_type.set_default_app(Some(app.name()));
+            }
+        }
+        ctx.pending.borrow_mut().remove(&key);
+    }
+    ctx.status.set_text("");
+    ctx.apply.set_sensitive(!ctx.pending.borrow().is_empty());
 }
 
 #[cfg(test)]
@@ -574,5 +688,77 @@ mod tests {
     fn search_is_case_insensitive() {
         assert!(matches_case("image/png", "PNG image", "image", "", "png"));
         assert!(matches_case("text/plain", "Plain text", "text", "", "PLAIN"));
+    }
+
+    fn app(name: &str) -> gio::AppInfo {
+        gio::AppInfo::create_from_commandline(name, Some(name), gio::AppInfoCreateFlags::NONE)
+            .expect("commandline app info")
+    }
+
+    #[test]
+    fn pending_select_adds_change() {
+        let mut pending = PendingChanges::default();
+
+        pending.select("image/png", vec!["image/png".to_string()], app("Foo"), None);
+
+        assert!(!pending.is_empty());
+        assert_eq!(pending.get("image/png").map(|app| app.name()).as_deref(), Some("Foo"));
+        let entries = pending.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "image/png");
+        assert_eq!(entries[0].1, vec!["image/png".to_string()]);
+    }
+
+    #[test]
+    fn pending_select_same_as_current_default_discards() {
+        let mut pending = PendingChanges::default();
+        let foo = app("Foo");
+
+        pending.select("image/png", vec!["image/png".to_string()], foo.clone(), Some(&foo));
+
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn pending_reselect_of_current_default_removes_change() {
+        let mut pending = PendingChanges::default();
+        let foo = app("Foo");
+        let bar = app("Bar");
+
+        pending.select("text/plain", vec!["text/plain".to_string()], bar, None);
+        pending.select("text/plain", vec!["text/plain".to_string()], foo.clone(), Some(&foo));
+
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn pending_same_key_replaces_and_keeps_order() {
+        let mut pending = PendingChanges::default();
+
+        pending.select("a", vec!["a".to_string()], app("A1"), None);
+        pending.select("b", vec!["b".to_string()], app("B"), None);
+        pending.select("a", vec!["a".to_string(), "a2".to_string()], app("A2"), None);
+
+        let entries = pending.entries();
+        let keys: Vec<&str> = entries.iter().map(|entry| entry.0.as_str()).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+        assert_eq!(pending.get("a").map(|app| app.name()).as_deref(), Some("A2"));
+        assert_eq!(entries[0].1, vec!["a".to_string(), "a2".to_string()]);
+    }
+
+    #[test]
+    fn pending_remove_clears_entry() {
+        let mut pending = PendingChanges::default();
+
+        pending.select("image/png", vec!["image/png".to_string()], app("Foo"), None);
+        pending.remove("image/png");
+
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn same_app_matches_identical_commandline_apps() {
+        assert!(same_app(&app("Foo"), &app("Foo")));
+        assert!(!same_app(&app("Foo"), &app("Bar")));
     }
 }
