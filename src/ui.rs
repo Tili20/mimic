@@ -1,6 +1,7 @@
 // Сборка интерфейса.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use gio::ListStore;
@@ -9,81 +10,10 @@ use gtk::prelude::*;
 use gtk::{
     ActionBar, Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
     Image, Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
-    SignalListItemFactory, SingleSelection, StringList, StringObject,
+    SignalListItemFactory, SingleSelection, StringObject, TreeExpander, TreeListModel, TreeListRow,
 };
 
-use crate::model::MimeType;
-
-mod imp {
-    use std::cell::RefCell;
-
-    use glib::Properties;
-    use glib::prelude::*;
-    use glib::subclass::prelude::*;
-    use gtk::subclass::prelude::*;
-
-    #[derive(Properties, Default)]
-    #[properties(wrapper_type = super::MimicFilter)]
-    pub struct MimicFilter {
-        #[property(get, set)]
-        pub search: RefCell<String>,
-        #[property(get, set)]
-        pub category: RefCell<String>,
-        #[property(get, set)]
-        pub hide_rare: RefCell<bool>,
-    }
-
-    #[glib::object_subclass]
-    impl ObjectSubclass for MimicFilter {
-        const NAME: &'static str = "MimicFilter";
-        type Type = super::MimicFilter;
-        type ParentType = gtk::Filter;
-    }
-
-    impl ObjectImpl for MimicFilter {
-        fn constructed(&self) {
-            self.parent_constructed();
-            self.hide_rare.replace(true);
-        }
-
-        fn properties() -> &'static [glib::ParamSpec] {
-            Self::derived_properties()
-        }
-
-        fn set_property(&self, id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-            self.derived_set_property(id, value, pspec)
-        }
-
-        fn property(&self, id: usize, pspec: &glib::ParamSpec) -> glib::Value {
-            self.derived_property(id, pspec)
-        }
-    }
-
-    impl FilterImpl for MimicFilter {
-        fn match_(&self, item: &glib::Object) -> bool {
-            let mime_type = item
-                .downcast_ref::<crate::model::MimeType>()
-                .expect("filtered items are MimeType objects");
-
-            super::matches(
-                mime_type,
-                self.search.borrow().as_str(),
-                self.category.borrow().as_str(),
-                *self.hide_rare.borrow(),
-            )
-        }
-    }
-}
-
-glib::wrapper! {
-    pub struct MimicFilter(ObjectSubclass<imp::MimicFilter>) @extends gtk::Filter;
-}
-
-impl MimicFilter {
-    pub fn new() -> Self {
-        glib::Object::new()
-    }
-}
+use crate::model::{MimeGroup, MimeType};
 
 fn matches(mime_type: &MimeType, search: &str, category: &str, hide_rare: bool) -> bool {
     let search = search.to_lowercase();
@@ -105,6 +35,8 @@ fn matches(mime_type: &MimeType, search: &str, category: &str, hide_rare: bool) 
 const CSS: &str = "
 .mimic-description { font-weight: 700; }
 .mimic-error { color: red; }
+.mimic-group-row { font-size: 12px; font-weight: 700; }
+.mimic-type-row { font-size: 12px; font-family: monospace; }
 ";
 
 struct PendingChange {
@@ -145,6 +77,7 @@ impl PendingChanges {
         });
     }
 
+    #[cfg(test)]
     fn get(&self, key: &str) -> Option<&gio::AppInfo> {
         self.changes
             .iter()
@@ -404,10 +337,9 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         store.append(mime_type);
     }
 
-    let filter = MimicFilter::new();
-    let filtered = gtk::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+    let hide_rare = Rc::new(Cell::new(true));
 
-    let selection = SingleSelection::new(Some(filtered));
+    let selection = SingleSelection::new(Some(build_advanced_tree(&store, "", hide_rare.get())));
     selection.set_autoselect(false);
 
     let status = Label::new(None);
@@ -429,24 +361,47 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         window: window.clone(),
     };
 
-    let setup_ctx = ctx.clone();
     let factory = SignalListItemFactory::new();
-    factory.connect_setup(move |_, object| {
+    factory.connect_setup(|_, object| {
         let item = object
             .downcast_ref::<gtk::ListItem>()
             .expect("item is a ListItem");
-        setup_row(item, &setup_ctx);
+        setup_advanced_row(item);
     });
-    let bind_ctx = ctx.clone();
-    factory.connect_bind(move |_, object| {
+    factory.connect_bind(|_, object| {
         let item = object
             .downcast_ref::<gtk::ListItem>()
             .expect("item is a ListItem");
-        bind_row(item, &bind_ctx);
+        bind_advanced_row(item);
+    });
+    factory.connect_unbind(|_, object| {
+        let item = object
+            .downcast_ref::<gtk::ListItem>()
+            .expect("item is a ListItem");
+        unbind_advanced_row(item);
     });
 
     let list_view = ListView::new(Some(selection.clone()), Some(factory));
     list_view.set_vexpand(true);
+
+    let activate_ctx = ctx.clone();
+    let activate_selection = selection.clone();
+    list_view.connect_activate(move |_, position| {
+        let Some(row) = activate_selection
+            .item(position)
+            .and_downcast::<TreeListRow>()
+        else {
+            return;
+        };
+        let Some(item) = row.item() else {
+            return;
+        };
+        if let Some(mime_type) = item.downcast_ref::<MimeType>() {
+            open_chooser_for(&activate_ctx, mime_type);
+        } else {
+            row.set_expanded(!row.is_expanded());
+        }
+    });
 
     let scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -458,23 +413,19 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         .hexpand(true)
         .build();
 
-    let mut categories: Vec<String> = mime_types
-        .iter()
-        .map(|m| m.category())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    categories.insert(0, "All".to_string());
-    let category_refs: Vec<&str> = categories.iter().map(String::as_str).collect();
-    let category_model = StringList::new(&category_refs);
+    let rebuild: Rc<dyn Fn()> = {
+        let store = store.clone();
+        let selection = selection.clone();
+        let search = search.clone();
+        let hide_rare = hide_rare.clone();
+        Rc::new(move || {
+            let tree = build_advanced_tree(&store, &search.text(), hide_rare.get());
+            selection.set_model(Some(&tree));
+        })
+    };
 
-    let dropdown = DropDown::new(Some(category_model), None::<&gtk::Expression>);
-
-    let filter_search = filter.clone();
-    search.connect_search_changed(move |search| {
-        filter_search.set_search(search.text().to_string());
-        filter_search.changed(gtk::FilterChange::Different);
-    });
+    let search_refresh = rebuild.clone();
+    search.connect_search_changed(move |_| search_refresh());
 
     let search_is_focused = Rc::new(Cell::new(false));
     let flag_enter = search_is_focused.clone();
@@ -509,14 +460,6 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         focus_search.grab_focus();
     });
 
-    let filter_category = filter.clone();
-    dropdown.connect_selected_notify(move |dropdown| {
-        let index = dropdown.selected() as usize;
-        let category = categories.get(index).cloned().unwrap_or_default();
-        filter_category.set_category(category);
-        filter_category.changed(gtk::FilterChange::Different);
-    });
-
     let controls = Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -526,7 +469,6 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         .margin_end(12)
         .build();
     controls.append(&search);
-    controls.append(&dropdown);
 
     let advanced_root = Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -549,7 +491,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         }
     });
 
-    let menu_button = build_menu_button(&filter);
+    let menu_button = build_menu_button(hide_rare.clone(), rebuild.clone());
 
     let header = HeaderBar::new();
     header.set_title_widget(Some(&gtk::Label::new(Some("Mimic"))));
@@ -561,8 +503,11 @@ fn setup_window(window: &gtk::ApplicationWindow) {
 
     let click_ctx = ctx.clone();
     let click_store = store.clone();
-    ctx.apply
-        .connect_clicked(move |_| apply_pending(&click_ctx, &click_store));
+    let click_refresh = rebuild.clone();
+    ctx.apply.connect_clicked(move |_| {
+        apply_pending(&click_ctx, &click_store);
+        click_refresh();
+    });
 
     let body = Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -698,20 +643,19 @@ fn attach_group_row(grid: &Grid, row: i32, group: &crate::backend::Group, ctx: &
     grid.attach(&dropdown, 1, row, 1, 1);
 }
 
-fn build_menu_button(filter: &MimicFilter) -> MenuButton {
+fn build_menu_button(hide_rare: Rc<Cell<bool>>, on_toggle: Rc<dyn Fn()>) -> MenuButton {
     let check = CheckButton::builder()
         .label("Hide rarely used MIME types")
-        .active(true)
+        .active(hide_rare.get())
         .margin_top(8)
         .margin_bottom(8)
         .margin_start(8)
         .margin_end(8)
         .build();
 
-    let filter_hide = filter.clone();
     check.connect_toggled(move |check| {
-        filter_hide.set_hide_rare(check.is_active());
-        filter_hide.changed(gtk::FilterChange::Different);
+        hide_rare.set(check.is_active());
+        on_toggle();
     });
 
     let popover = Popover::new();
@@ -723,148 +667,168 @@ fn build_menu_button(filter: &MimicFilter) -> MenuButton {
         .build()
 }
 
-fn apps_for_dropdown(mime: &str) -> Vec<gio::AppInfo> {
-    let mut apps = crate::backend::apps_for(mime);
-    if apps.is_empty()
-        && let Some(default) = gio::AppInfo::default_for_type(mime, false)
-    {
-        apps.push(default);
+/// Группирует типы по категориям для дерева вкладки Advanced с учётом
+/// поиска и фильтра «редких» типов. Категории сохраняют порядок появления.
+fn advanced_groups(store: &ListStore, search: &str, hide_rare: bool) -> Vec<(String, ListStore)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, ListStore> = HashMap::new();
+
+    for index in 0..store.n_items() {
+        let Some(mime_type) = store.item(index).and_downcast::<MimeType>() else {
+            continue;
+        };
+        if !matches(&mime_type, search, "", hide_rare) {
+            continue;
+        }
+        let category = mime_type.category().to_string();
+        let children = groups.entry(category.clone()).or_insert_with(|| {
+            order.push(category.clone());
+            ListStore::new::<MimeType>()
+        });
+        children.append(&mime_type);
     }
-    apps
+
+    order
+        .into_iter()
+        .map(|category| {
+            let children = groups.remove(&category).expect("category model exists");
+            (category, children)
+        })
+        .collect()
 }
 
-fn setup_row(item: &gtk::ListItem, ctx: &ApplyContext) {
-    let description = Label::new(None);
-    description.add_css_class("mimic-description");
-    description.set_xalign(0.0);
-    description.set_valign(Align::Center);
-    description.set_hexpand(true);
-    description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+/// Строит дерево «категория → типы». При непустом поиске узлы раскрыты,
+/// чтобы найденные типы были видны сразу.
+fn build_advanced_tree(store: &ListStore, search: &str, hide_rare: bool) -> TreeListModel {
+    let autoexpand = !search.trim().is_empty();
+    let groups = advanced_groups(store, search, hide_rare);
+    let children: HashMap<String, ListStore> = groups
+        .iter()
+        .map(|(category, types)| (category.clone(), types.clone()))
+        .collect();
 
-    let dropdown = DropDown::builder().factory(&dropdown_factory()).build();
-    dropdown.set_valign(Align::Center);
-    dropdown.set_width_request(280);
+    let root = ListStore::new::<MimeGroup>();
+    for (category, _) in &groups {
+        root.append(&MimeGroup::new(category));
+    }
 
-    let first = Box::new(gtk::Orientation::Horizontal, 8);
-    first.append(&description);
-    first.append(&dropdown);
+    TreeListModel::new(root, false, autoexpand, move |object| {
+        let group = object.downcast_ref::<MimeGroup>()?;
+        children
+            .get(&group.name())
+            .cloned()
+            .map(|store| store.upcast())
+    })
+}
 
-    let mime = Label::new(None);
-    mime.add_css_class("monospace");
-    mime.add_css_class("dim-label");
-    mime.set_xalign(0.0);
-    mime.set_ellipsize(gtk::pango::EllipsizeMode::End);
+/// Иконка типа: значок приложения по умолчанию, иначе значок самого типа.
+fn set_type_icon(icon: &Image, mime_type: &MimeType) {
+    let default_icon =
+        gio::AppInfo::default_for_type(&mime_type.mime(), false).and_then(|app| app.icon());
+    match default_icon {
+        Some(gicon) => icon.set_from_gicon(&gicon),
+        None => icon.set_from_gicon(&gio::content_type_get_icon(&mime_type.mime())),
+    }
+}
 
-    let row = Box::new(gtk::Orientation::Vertical, 2);
-    row.set_margin_top(4);
-    row.set_margin_bottom(4);
-    row.set_margin_start(6);
-    row.set_margin_end(6);
-    row.append(&first);
-    row.append(&mime);
+/// Двойной клик по типу: выбор приложения по умолчанию через диалог «Other…»,
+/// результат записывается в pending.
+fn open_chooser_for(ctx: &ApplyContext, mime_type: &MimeType) {
+    let window = ctx.window.clone();
+    let ctx = ctx.clone();
+    let mime = mime_type.mime();
+    let heading = format!("Select default for {}", mime_type.description());
+    crate::chooser::show_other_dialog(
+        &window,
+        &heading,
+        vec![mime.clone()],
+        mime.clone(),
+        move |picked| {
+            let Some(app) = picked else {
+                return;
+            };
+            let current = gio::AppInfo::default_for_type(&mime, false);
+            ctx.record(&mime, vec![mime.clone()], app, current.as_ref());
+        },
+    );
+}
 
-    let apps: Rc<RefCell<Vec<gio::AppInfo>>> = Rc::new(RefCell::new(Vec::new()));
-    let revert = Rc::new(Cell::new(u32::MAX));
+fn setup_advanced_row(item: &gtk::ListItem) {
+    let expander = TreeExpander::new();
 
-    let notify_item = item.clone();
-    let notify_ctx = ctx.clone();
-    let notify_apps = apps.clone();
-    let notify_revert = revert.clone();
-    let notify_dropdown = dropdown.clone();
-    dropdown.connect_selected_notify(move |dropdown| {
-        if notify_ctx.rebinding.get() {
-            return;
-        }
-        let index = dropdown.selected();
-        if index == u32::MAX {
-            return;
-        }
-        let Some(mime_type) = notify_item.item().and_downcast::<MimeType>() else {
-            return;
-        };
-        let mime = mime_type.mime();
-        let apps_now = notify_apps.borrow().clone();
-        if index == sentinel_index(apps_now.len()) {
-            let heading = format!("Select default for {}", mime_type.description());
-            open_other(
-                &notify_ctx,
-                OtherTarget {
-                    key: mime.clone(),
-                    mimes: vec![mime.clone()],
-                    primary: mime.clone(),
-                    heading,
-                    dropdown: notify_dropdown.clone(),
-                    apps: notify_apps.clone(),
-                    revert: notify_revert.clone(),
-                },
-            );
-            return;
-        }
-        let Some(app) = apps_now.get(index as usize).cloned() else {
-            return;
-        };
-        notify_revert.set(index);
-        let current = gio::AppInfo::default_for_type(&mime, false);
-        notify_ctx.record(&mime, vec![mime.clone()], app, current.as_ref());
-    });
+    let icon = Image::new();
+    icon.set_pixel_size(12);
+    icon.set_valign(Align::Center);
 
-    item.set_child(Some(&row));
+    let label = Label::new(None);
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+    let content = Box::new(gtk::Orientation::Horizontal, 6);
+    content.append(&icon);
+    content.append(&label);
+
+    expander.set_child(Some(&content));
+    item.set_child(Some(&expander));
+
     unsafe {
-        item.set_data("description", description);
-        item.set_data("mime", mime);
-        item.set_data("dropdown", dropdown);
-        item.set_data("apps", apps);
-        item.set_data("revert", revert);
+        item.set_data("advanced-icon", icon);
+        item.set_data("advanced-label", label);
     }
 }
 
-fn bind_row(item: &gtk::ListItem, ctx: &ApplyContext) {
-    let mime_type = item
-        .item()
-        .and_downcast::<MimeType>()
-        .expect("item holds a MimeType");
+fn bind_advanced_row(item: &gtk::ListItem) {
+    let Some(row) = item.item().and_downcast::<TreeListRow>() else {
+        return;
+    };
+    let Some(expander) = item.child().and_downcast::<TreeExpander>() else {
+        return;
+    };
+    expander.set_list_row(Some(&row));
 
-    let (description, mime, dropdown, apps, revert) = unsafe {
+    let (icon, label) = unsafe {
         (
-            item.data::<Label>("description")
-                .expect("widgets are set up")
+            item.data::<Image>("advanced-icon")
+                .expect("icon is set up")
                 .as_ref(),
-            item.data::<Label>("mime")
-                .expect("widgets are set up")
-                .as_ref(),
-            item.data::<DropDown>("dropdown")
-                .expect("widgets are set up")
-                .as_ref(),
-            item.data::<Rc<RefCell<Vec<gio::AppInfo>>>>("apps")
-                .expect("widgets are set up")
-                .as_ref(),
-            item.data::<Rc<Cell<u32>>>("revert")
-                .expect("widgets are set up")
+            item.data::<Label>("advanced-label")
+                .expect("label is set up")
                 .as_ref(),
         )
     };
 
-    description.set_text(&mime_type.description());
-    mime.set_text(&mime_type.mime());
-
-    let apps_now = apps_for_dropdown(&mime_type.mime());
-    let selected = ctx
-        .pending
-        .borrow()
-        .get(&mime_type.mime())
-        .cloned()
-        .or_else(|| gio::AppInfo::default_for_type(&mime_type.mime(), false));
-    let index =
-        selected.and_then(|selected| apps_now.iter().position(|app| same_app(app, &selected)));
-
-    ctx.rebinding.set(true);
-    *apps.borrow_mut() = apps_now;
-    rebuild_dropdown(dropdown, &apps.borrow());
-    if let Some(position) = index {
-        dropdown.set_selected(position as u32);
+    match row.item() {
+        Some(object) if object.is::<MimeGroup>() => {
+            let group = object.downcast_ref::<MimeGroup>().expect("group object");
+            icon.set_visible(false);
+            label.remove_css_class("mimic-type-row");
+            label.add_css_class("mimic-group-row");
+            label.set_text(&group.name());
+            label.set_tooltip_text(None);
+        }
+        Some(object) => {
+            let mime_type = object.downcast_ref::<MimeType>().expect("mime type object");
+            icon.set_visible(true);
+            label.remove_css_class("mimic-group-row");
+            label.add_css_class("mimic-type-row");
+            label.set_text(&mime_type.mime());
+            label.set_tooltip_text(Some(&mime_type.description()));
+            set_type_icon(icon, mime_type);
+        }
+        None => {
+            icon.set_visible(false);
+            label.set_text("");
+            label.set_tooltip_text(None);
+        }
     }
-    ctx.rebinding.set(false);
-    revert.set(dropdown.selected());
+}
+
+fn unbind_advanced_row(item: &gtk::ListItem) {
+    let Some(expander) = item.child().and_downcast::<TreeExpander>() else {
+        return;
+    };
+    expander.set_list_row(None);
 }
 
 fn apply_pending(ctx: &ApplyContext, store: &ListStore) {
@@ -968,6 +932,52 @@ mod tests {
             "",
             "PLAIN"
         ));
+    }
+
+    fn mime_store(types: &[(&str, &str, &str)]) -> ListStore {
+        let store = ListStore::new::<MimeType>();
+        for (mime, description, category) in types {
+            store.append(&MimeType::new(mime, description, category, None));
+        }
+        store
+    }
+
+    #[test]
+    fn advanced_groups_groups_by_category_in_order() {
+        let store = mime_store(&[
+            ("image/png", "PNG image", "image"),
+            ("text/plain", "Plain text", "text"),
+            ("image/jpeg", "JPEG image", "image"),
+        ]);
+
+        let groups = advanced_groups(&store, "", false);
+
+        let categories: Vec<&str> = groups.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(categories, vec!["image", "text"]);
+        assert_eq!(groups[0].1.n_items(), 2);
+        assert_eq!(groups[1].1.n_items(), 1);
+    }
+
+    #[test]
+    fn advanced_groups_applies_search() {
+        let store = mime_store(&[
+            ("image/png", "PNG image", "image"),
+            ("text/plain", "Plain text", "text"),
+        ]);
+
+        let groups = advanced_groups(&store, "png", false);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "image");
+        assert_eq!(groups[0].1.n_items(), 1);
+    }
+
+    #[test]
+    fn advanced_groups_hides_rare_types() {
+        let store = mime_store(&[("x-scheme-handler/http", "URL handler", "x-scheme-handler")]);
+
+        assert!(advanced_groups(&store, "", true).is_empty());
+        assert_eq!(advanced_groups(&store, "", false).len(), 1);
     }
 
     fn app(name: &str) -> gio::AppInfo {

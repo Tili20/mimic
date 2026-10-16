@@ -36,15 +36,6 @@ fn category_of(mime: &str) -> String {
         .unwrap_or_else(|| "other".to_string())
 }
 
-pub fn apps_for(mime: &str) -> Vec<AppInfo> {
-    let mut apps = AppInfo::all_for_type(mime)
-        .into_iter()
-        .filter(should_list)
-        .collect::<Vec<_>>();
-    apps.sort_by_key(|app| app.name());
-    apps
-}
-
 pub fn is_rare(mime: &str) -> bool {
     mime.starts_with("x-scheme-handler/")
         || mime.starts_with("inode/")

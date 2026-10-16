@@ -1,4 +1,4 @@
-// Модель данных: glib-объект MimeType.
+// Модель данных: glib-объекты MimeType и MimeGroup.
 
 mod imp {
     use std::cell::RefCell;
@@ -53,5 +53,50 @@ impl MimeType {
             .property("category", category)
             .property("default-app", default_app)
             .build()
+    }
+}
+
+mod group_imp {
+    use std::cell::RefCell;
+
+    use glib::Properties;
+    use glib::prelude::*;
+    use glib::subclass::prelude::*;
+
+    #[derive(Properties, Default)]
+    #[properties(wrapper_type = super::MimeGroup)]
+    pub struct MimeGroup {
+        #[property(get, set)]
+        pub name: RefCell<String>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for MimeGroup {
+        const NAME: &'static str = "MimicMimeGroup";
+        type Type = super::MimeGroup;
+    }
+
+    impl ObjectImpl for MimeGroup {
+        fn properties() -> &'static [glib::ParamSpec] {
+            Self::derived_properties()
+        }
+
+        fn set_property(&self, id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            self.derived_set_property(id, value, pspec)
+        }
+
+        fn property(&self, id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            self.derived_property(id, pspec)
+        }
+    }
+}
+
+glib::wrapper! {
+    pub struct MimeGroup(ObjectSubclass<group_imp::MimeGroup>);
+}
+
+impl MimeGroup {
+    pub fn new(name: &str) -> Self {
+        glib::Object::builder().property("name", name).build()
     }
 }
