@@ -8,15 +8,16 @@ use gio::prelude::*;
 use crate::model::MimeType;
 
 pub fn load_mime_types() -> Vec<MimeType> {
-    let registered: BTreeSet<_> =
-        gio::functions::content_types_get_registered().into_iter().collect();
+    let registered: BTreeSet<_> = gio::functions::content_types_get_registered()
+        .into_iter()
+        .collect();
     let mut mime_types: Vec<_> = registered
         .into_iter()
         .map(|mime| {
             let description = gio::functions::content_type_get_description(&mime);
             let category = category_of(&mime);
-            let default_app = AppInfo::default_for_type(&mime, false)
-                .map(|app| app.name().to_string());
+            let default_app =
+                AppInfo::default_for_type(&mime, false).map(|app| app.name().to_string());
             MimeType::new(&mime, &description, &category, default_app)
         })
         .collect();
@@ -94,7 +95,11 @@ pub fn groups() -> Vec<Group> {
     ]);
 
     let mut text_mimes = with_prefix("text/");
-    text_mimes.extend(explicit(&["application/json", "application/xml", "application/javascript"]));
+    text_mimes.extend(explicit(&[
+        "application/json",
+        "application/xml",
+        "application/javascript",
+    ]));
 
     vec![
         Group {

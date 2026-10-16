@@ -46,12 +46,7 @@ glib::wrapper! {
 }
 
 impl MimeType {
-    pub fn new(
-        mime: &str,
-        description: &str,
-        category: &str,
-        default_app: Option<String>,
-    ) -> Self {
+    pub fn new(mime: &str, description: &str, category: &str, default_app: Option<String>) -> Self {
         glib::Object::builder()
             .property("mime", mime)
             .property("description", description)

@@ -10,7 +10,7 @@ license=('MIT')
 depends=('gtk4')
 makedepends=('cargo' 'rust')
 source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('5c0516a23f067d265789e40f9460db57dc9f62079b66b942af7182bdc46d7922')
+sha256sums=('c781ee38c215ea637984560df51cc510c79ba5ab5d6fef560e35e5b2a4cb0784')
 
 build() {
   cd "$srcdir/mimic-$pkgver"
