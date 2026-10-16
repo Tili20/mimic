@@ -7,7 +7,7 @@ use gio::ListStore;
 use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
-    Align, ActionBar, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
+    ActionBar, Align, Box, Button, CheckButton, DropDown, EventControllerKey, Grid, HeaderBar,
     Image, Label, ListView, MenuButton, Notebook, Popover, ScrolledWindow, SearchEntry,
     SignalListItemFactory, SingleSelection, StringList, StringObject,
 };
@@ -211,7 +211,9 @@ fn dropdown_rows(app_count: usize) -> Vec<DropdownRow> {
 fn dropdown_factory() -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
     factory.connect_setup(|_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let item = object
+            .downcast_ref::<gtk::ListItem>()
+            .expect("item is a ListItem");
         let image = Image::new();
         image.set_pixel_size(16);
         let label = Label::new(None);
@@ -222,11 +224,16 @@ fn dropdown_factory() -> SignalListItemFactory {
         item.set_child(Some(&row));
     });
     factory.connect_bind(|_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let item = object
+            .downcast_ref::<gtk::ListItem>()
+            .expect("item is a ListItem");
         let Some(row) = item.child().and_downcast::<Box>() else {
             return;
         };
-        let image = row.first_child().and_downcast::<Image>().expect("icon is set up");
+        let image = row
+            .first_child()
+            .and_downcast::<Image>()
+            .expect("icon is set up");
         let label = image
             .next_sibling()
             .and_downcast::<Label>()
@@ -362,8 +369,7 @@ impl ApplyContext {
         self.pending
             .borrow_mut()
             .select(key, mimes, app, current_default);
-        self.apply
-            .set_sensitive(!self.pending.borrow().is_empty());
+        self.apply.set_sensitive(!self.pending.borrow().is_empty());
     }
 }
 
@@ -371,8 +377,8 @@ pub fn build_ui(app: &gtk::Application) {
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Mimic")
-        .default_width(900)
-        .default_height(600)
+        .default_width(720)
+        .default_height(840)
         .build();
 
     load_css(&window);
@@ -426,12 +432,16 @@ fn setup_window(window: &gtk::ApplicationWindow) {
     let setup_ctx = ctx.clone();
     let factory = SignalListItemFactory::new();
     factory.connect_setup(move |_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let item = object
+            .downcast_ref::<gtk::ListItem>()
+            .expect("item is a ListItem");
         setup_row(item, &setup_ctx);
     });
     let bind_ctx = ctx.clone();
     factory.connect_bind(move |_, object| {
-        let item = object.downcast_ref::<gtk::ListItem>().expect("item is a ListItem");
+        let item = object
+            .downcast_ref::<gtk::ListItem>()
+            .expect("item is a ListItem");
         bind_row(item, &bind_ctx);
     });
 
@@ -487,10 +497,7 @@ fn setup_window(window: &gtk::ApplicationWindow) {
         let modifiers = gtk::gdk::ModifierType::CONTROL_MASK
             | gtk::gdk::ModifierType::ALT_MASK
             | gtk::gdk::ModifierType::SUPER_MASK;
-        if !search_focused.get()
-            && !state.intersects(modifiers)
-            && keyval.to_unicode().is_some()
-        {
+        if !search_focused.get() && !state.intersects(modifiers) && keyval.to_unicode().is_some() {
             search_for_keys.grab_focus();
             return glib::Propagation::Stop;
         }
@@ -554,9 +561,12 @@ fn setup_window(window: &gtk::ApplicationWindow) {
 
     let click_ctx = ctx.clone();
     let click_store = store.clone();
-    ctx.apply.connect_clicked(move |_| apply_pending(&click_ctx, &click_store));
+    ctx.apply
+        .connect_clicked(move |_| apply_pending(&click_ctx, &click_store));
 
-    let body = Box::builder().orientation(gtk::Orientation::Vertical).build();
+    let body = Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
     body.append(&notebook);
     body.append(&action_bar);
 
@@ -606,7 +616,9 @@ fn build_general_page(ctx: &ApplyContext) -> gtk::Box {
         .build();
     scrolled.set_vexpand(true);
 
-    let page = Box::builder().orientation(gtk::Orientation::Vertical).build();
+    let page = Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
     page.append(&scrolled);
     page
 }
@@ -814,11 +826,16 @@ fn bind_row(item: &gtk::ListItem, ctx: &ApplyContext) {
 
     let (description, mime, dropdown, apps, revert) = unsafe {
         (
-            item.data::<Label>("description").expect("widgets are set up").as_ref(),
-            item.data::<Label>("mime").expect("widgets are set up").as_ref(),
-            item.data::<DropDown>("dropdown").expect("widgets are set up").as_ref(),
-            item
-                .data::<Rc<RefCell<Vec<gio::AppInfo>>>>("apps")
+            item.data::<Label>("description")
+                .expect("widgets are set up")
+                .as_ref(),
+            item.data::<Label>("mime")
+                .expect("widgets are set up")
+                .as_ref(),
+            item.data::<DropDown>("dropdown")
+                .expect("widgets are set up")
+                .as_ref(),
+            item.data::<Rc<RefCell<Vec<gio::AppInfo>>>>("apps")
                 .expect("widgets are set up")
                 .as_ref(),
             item.data::<Rc<Cell<u32>>>("revert")
@@ -837,11 +854,8 @@ fn bind_row(item: &gtk::ListItem, ctx: &ApplyContext) {
         .get(&mime_type.mime())
         .cloned()
         .or_else(|| gio::AppInfo::default_for_type(&mime_type.mime(), false));
-    let index = selected.and_then(|selected| {
-        apps_now
-            .iter()
-            .position(|app| same_app(app, &selected))
-    });
+    let index =
+        selected.and_then(|selected| apps_now.iter().position(|app| same_app(app, &selected)));
 
     ctx.rebinding.set(true);
     *apps.borrow_mut() = apps_now;
@@ -857,12 +871,15 @@ fn apply_pending(ctx: &ApplyContext, store: &ListStore) {
     let entries = ctx.pending.borrow().entries();
     for (key, mimes, app) in entries {
         if let Err(error) = crate::backend::set_default_group(&mimes, &app) {
-            ctx.status.set_text(&format!("Failed to set default: {error}"));
+            ctx.status
+                .set_text(&format!("Failed to set default: {error}"));
             return;
         }
         for i in 0..store.n_items() {
             if let Some(mime_type) = store.item(i).and_downcast::<MimeType>()
-                && mimes.iter().any(|m| m.as_str() == mime_type.mime().as_str())
+                && mimes
+                    .iter()
+                    .any(|m| m.as_str() == mime_type.mime().as_str())
             {
                 mime_type.set_default_app(Some(app.name()));
             }
@@ -909,7 +926,13 @@ mod tests {
     #[test]
     fn category_filters_out_other_categories() {
         assert!(matches_case("image/png", "PNG image", "image", "image", ""));
-        assert!(!matches_case("text/plain", "Plain text", "text", "image", ""));
+        assert!(!matches_case(
+            "text/plain",
+            "Plain text",
+            "text",
+            "image",
+            ""
+        ));
     }
 
     #[test]
@@ -926,13 +949,25 @@ mod tests {
 
     #[test]
     fn search_matches_description() {
-        assert!(matches_case("text/plain", "Plain text", "text", "", "plain"));
+        assert!(matches_case(
+            "text/plain",
+            "Plain text",
+            "text",
+            "",
+            "plain"
+        ));
     }
 
     #[test]
     fn search_is_case_insensitive() {
         assert!(matches_case("image/png", "PNG image", "image", "", "png"));
-        assert!(matches_case("text/plain", "Plain text", "text", "", "PLAIN"));
+        assert!(matches_case(
+            "text/plain",
+            "Plain text",
+            "text",
+            "",
+            "PLAIN"
+        ));
     }
 
     fn app(name: &str) -> gio::AppInfo {
@@ -947,7 +982,10 @@ mod tests {
         pending.select("image/png", vec!["image/png".to_string()], app("Foo"), None);
 
         assert!(!pending.is_empty());
-        assert_eq!(pending.get("image/png").map(|app| app.name()).as_deref(), Some("Foo"));
+        assert_eq!(
+            pending.get("image/png").map(|app| app.name()).as_deref(),
+            Some("Foo")
+        );
         let entries = pending.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "image/png");
@@ -959,7 +997,12 @@ mod tests {
         let mut pending = PendingChanges::default();
         let foo = app("Foo");
 
-        pending.select("image/png", vec!["image/png".to_string()], foo.clone(), Some(&foo));
+        pending.select(
+            "image/png",
+            vec!["image/png".to_string()],
+            foo.clone(),
+            Some(&foo),
+        );
 
         assert!(pending.is_empty());
     }
@@ -971,7 +1014,12 @@ mod tests {
         let bar = app("Bar");
 
         pending.select("text/plain", vec!["text/plain".to_string()], bar, None);
-        pending.select("text/plain", vec!["text/plain".to_string()], foo.clone(), Some(&foo));
+        pending.select(
+            "text/plain",
+            vec!["text/plain".to_string()],
+            foo.clone(),
+            Some(&foo),
+        );
 
         assert!(pending.is_empty());
     }
@@ -982,12 +1030,20 @@ mod tests {
 
         pending.select("a", vec!["a".to_string()], app("A1"), None);
         pending.select("b", vec!["b".to_string()], app("B"), None);
-        pending.select("a", vec!["a".to_string(), "a2".to_string()], app("A2"), None);
+        pending.select(
+            "a",
+            vec!["a".to_string(), "a2".to_string()],
+            app("A2"),
+            None,
+        );
 
         let entries = pending.entries();
         let keys: Vec<&str> = entries.iter().map(|entry| entry.0.as_str()).collect();
         assert_eq!(keys, vec!["a", "b"]);
-        assert_eq!(pending.get("a").map(|app| app.name()).as_deref(), Some("A2"));
+        assert_eq!(
+            pending.get("a").map(|app| app.name()).as_deref(),
+            Some("A2")
+        );
         assert_eq!(entries[0].1, vec!["a".to_string(), "a2".to_string()]);
     }
 
@@ -1023,7 +1079,11 @@ mod tests {
 
     #[test]
     fn sentinel_index_leaves_room_for_placeholder() {
-        assert_eq!(sentinel_index(0), 1, "empty list keeps 'Other…' off position 0");
+        assert_eq!(
+            sentinel_index(0),
+            1,
+            "empty list keeps 'Other…' off position 0"
+        );
         assert_eq!(sentinel_index(1), 1);
         assert_eq!(sentinel_index(4), 4);
     }
