@@ -7,7 +7,7 @@ use gio::prelude::*;
 use gtk::prelude::*;
 use gtk::{
     Align, Box, Button, Entry, EventControllerKey, FileDialog, Label, ListBox, ListBoxRow,
-    SearchEntry, ScrolledWindow, Window,
+    ScrolledWindow, SearchEntry, Window,
 };
 
 type OnClose = Rc<dyn Fn(Option<gio::AppInfo>)>;
@@ -88,9 +88,7 @@ pub fn show_other_dialog<F>(
             let query = query.to_lowercase();
             let filtered: Vec<gio::AppInfo> = all_apps
                 .iter()
-                .filter(|app| {
-                    query.is_empty() || app.name().to_lowercase().contains(&query)
-                })
+                .filter(|app| query.is_empty() || app.name().to_lowercase().contains(&query))
                 .cloned()
                 .collect();
             while let Some(child) = list.first_child() {
@@ -232,17 +230,13 @@ pub fn show_other_dialog<F>(
         let entry = entry.clone();
         move |_| {
             let entry = entry.clone();
-            browse_dialog.open(
-                Some(&window),
-                None::<&gio::Cancellable>,
-                move |result| {
-                    if let Ok(file) = result
-                        && let Some(path) = file.path()
-                    {
-                        entry.set_text(&path.to_string_lossy());
-                    }
-                },
-            );
+            browse_dialog.open(Some(&window), None::<&gio::Cancellable>, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    entry.set_text(&path.to_string_lossy());
+                }
+            });
         }
     });
 
